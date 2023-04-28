@@ -1,5 +1,7 @@
 use std::path::Path;
 
+mod resource;
+
 pub struct Game {}
 
 impl Game {
