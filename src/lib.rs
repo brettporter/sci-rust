@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 #[macro_use]
 extern crate num_derive;
@@ -7,7 +7,7 @@ mod resource;
 
 pub struct Game<'a> {
     game_path: &'a Path,
-    resource_map: Vec<resource::ResourceMapEntry>,
+    resource_map: HashMap<u16, resource::ResourceMapEntry>,
 }
 
 impl Game<'_> {
