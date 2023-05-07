@@ -4,6 +4,8 @@ use std::{collections::HashMap, io, path::Path};
 
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use decompress::CompressionType;
+
 mod decompress;
 
 #[derive(FromPrimitive, ToPrimitive, Debug, PartialEq)]
@@ -120,15 +122,20 @@ pub(crate) fn load_all_resources(game_path: &Path) -> Result<HashMap<u16, Resour
             assert_eq!(resource_number, entry.resource_number);
 
             let comp_size = u16::from_le_bytes(header[2..4].try_into().unwrap()) as usize;
-            let _decomp_size = u16::from_le_bytes(header[4..6].try_into().unwrap());
-            let _method = u16::from_le_bytes(header[6..8].try_into().unwrap());
+            let decomp_size = u16::from_le_bytes(header[4..6].try_into().unwrap()) as usize;
+            let method = u16::from_le_bytes(header[6..8].try_into().unwrap());
 
             // Comp-size starts after that field
-            let resource_data = buffer[offset + 8..offset + 4 + comp_size].to_vec();
+            let compressed_data = buffer[offset + 8..offset + 4 + comp_size].to_vec();
 
-            // TODO: decompression methods
-            // TODO: check method with an enum and then process
-            // TODO: check decomp size matches
+            // TODO: refactor into the decompress module and let it handle different SCI versions
+            let resource_data = match FromPrimitive::from_u16(method).unwrap() {
+                CompressionType::None => compressed_data,
+                CompressionType::LZW => vec![0; decomp_size], // TODO: this isn't correct but don't want to fail yet
+                CompressionType::Huffman => decompress::huffman_decode(compressed_data),
+            };
+
+            assert_eq!(resource_data.len(), decomp_size);
 
             resources.insert(
                 id,
