@@ -18,6 +18,7 @@ enum HuffmanNode {
     Literal(),
 }
 
+// TODO: doesn't support QG2
 fn build_huffman_node(node_data: &[u8], node_index: u8) -> HuffmanNode {
     let offset = node_index as usize * 2;
     let value = node_data[offset];
