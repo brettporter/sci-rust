@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, SeekFrom};
 
 use bitstream_io::{BigEndian, BitRead, BitReader};
 
@@ -482,29 +482,32 @@ fn draw_pattern_circle(
     pattern_brush: &PatternBrush,
     texture: Option<u8>,
 ) {
-    // TODO: this seems like it would be allocated each call, look at moving into a constant / static
-    let pattern_widths = [
-        vec![0],
-        vec![0, 1, 0],
-        vec![1, 2, 2, 2, 1],
-        vec![1, 2, 3, 3, 3, 2, 1],
-        vec![1, 3, 4, 4, 4, 4, 4, 3, 1],
-        vec![1, 3, 4, 4, 5, 5, 5, 4, 4, 3, 2], // TODO: not sure this is right at top or bottom
-        vec![2, 4, 5, 5, 6, 6, 6, 6, 6, 5, 5, 4, 2],
-        vec![2, 4, 5, 6, 6, 7, 7, 7, 7, 7, 6, 6, 5, 4, 2],
+    // These are padded out with zeros to allow a const array of fixed size, but not all bytes are used
+    const PATTERN_WIDTHS: [[i32; 15]; 8] = [
+        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 2, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 2, 3, 3, 3, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 3, 4, 4, 4, 4, 4, 3, 1, 0, 0, 0, 0, 0, 0],
+        [1, 3, 4, 4, 5, 5, 5, 4, 4, 3, 2, 0, 0, 0, 0], // TODO: not sure this is right at top or bottom
+        [2, 4, 5, 5, 6, 6, 6, 6, 6, 5, 5, 4, 2, 0, 0],
+        [2, 4, 5, 6, 6, 7, 7, 7, 7, 7, 6, 6, 5, 4, 2],
     ];
 
     let size = pattern_brush.size;
-    let widths = &pattern_widths[size as usize];
-    assert_eq!(size as usize, (widths.len() - 1) / 2);
+    let widths = &PATTERN_WIDTHS[size as usize];
     assert_eq!(size, *widths.iter().max().unwrap());
 
     let mut reader = get_texture_reader(texture);
-    for (y_idx, w) in widths.iter().enumerate() {
-        for x_offset in -*w..=*w {
-            // TODO: I think this is the thing that's broken, as circle is a mask over texture but we aren't reading the empty bits
+    for y_idx in 0..=size * 2 {
+        let w = widths[y_idx as usize];
+        for x_offset in -w..=w {
+            // the interpreter wrapped at 255 not 256 bits
+            if reader.position_in_bits().unwrap() == 255 {
+                reader.seek_bits(SeekFrom::Start(0)).unwrap();
+            }
             if !pattern_brush.use_texture || reader.read_bit().unwrap() {
-                graphics.draw_point(x + x_offset, y + y_idx as i32 - size)
+                graphics.draw_point(x + x_offset, y + y_idx - size)
             }
         }
     }
@@ -521,6 +524,10 @@ fn draw_pattern_rect(
     let mut reader = get_texture_reader(texture);
     for dy in -size..=size {
         for dx in -size..size {
+            // the interpreter wrapped at 255 not 256 bits
+            if reader.position_in_bits().unwrap() == 255 {
+                reader.seek_bits(SeekFrom::Start(0)).unwrap();
+            }
             if !pattern_brush.use_texture || reader.read_bit().unwrap() {
                 graphics.draw_point(x + dx, y + dy);
             }
@@ -528,12 +535,8 @@ fn draw_pattern_rect(
     }
 }
 
-fn get_texture_reader(texture: Option<u8>) -> BitReader<Cursor<[u8; 64]>, BigEndian> {
-    const TEXTURE_DATA: [u8; 64] = [
-        0x20, 0x94, 0x02, 0x24, 0x90, 0x82, 0xa4, 0xa2, 0x82, 0x09, 0x0a, 0x22, 0x12, 0x10, 0x42,
-        0x14, 0x91, 0x4a, 0x91, 0x11, 0x08, 0x12, 0x25, 0x10, 0x22, 0xa8, 0x14, 0x24, 0x00, 0x50,
-        0x24, 0x04,
-        // repeat it to avoid wrapping -- TODO better way? Note docs say this wraps at 255 bits instead of 256 🤯
+fn get_texture_reader(texture: Option<u8>) -> BitReader<Cursor<[u8; 32]>, BigEndian> {
+    const TEXTURE_DATA: [u8; 32] = [
         0x20, 0x94, 0x02, 0x24, 0x90, 0x82, 0xa4, 0xa2, 0x82, 0x09, 0x0a, 0x22, 0x12, 0x10, 0x42,
         0x14, 0x91, 0x4a, 0x91, 0x11, 0x08, 0x12, 0x25, 0x10, 0x22, 0xa8, 0x14, 0x24, 0x00, 0x50,
         0x24, 0x04,
