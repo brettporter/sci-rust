@@ -36,8 +36,8 @@ pub(crate) struct Resource {
     resource_type: ResourceType,
     resource_number: u16,
 
-    // TODO: better way to handle this? For now just raw compressed data
-    resource_data: Vec<u8>,
+    // TODO: better way to handle this? For now just raw uncompressed data
+    pub resource_data: Vec<u8>,
 }
 
 fn parse_resource_id(value: u16) -> (ResourceType, u16) {

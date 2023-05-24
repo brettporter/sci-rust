@@ -1,11 +1,16 @@
+use std::time::Duration;
 use std::{collections::HashMap, path::Path};
 
-use resource::Resource;
-use resource::ResourceType;
+use graphics::Graphics;
+use resource::{Resource, ResourceType};
+use sdl2::event::Event;
+use sdl2::keyboard::Keycode;
 
 #[macro_use]
 extern crate num_derive;
 
+mod graphics;
+mod picture;
 mod resource;
 
 pub struct Game {
@@ -31,13 +36,83 @@ impl Game {
         Ok(game)
     }
 
-    pub fn run(self: Self) {
-        // TODO: move specifics to examples directory instead
+    // Use for navigation in the main loop
+    // TODO: move to examples
+    fn find_resource(&self, resource_number: u16, inc: bool) -> u16 {
+        let mut result = resource_number;
+        loop {
+            if inc {
+                result += 1;
+                if result > 999 {
+                    result = 0;
+                }
+            } else {
+                result -= 1;
+                if result == 0 {
+                    result = 999;
+                }
+            }
 
-        let _resource = resource::get_resource(&self.resources, ResourceType::Pic, 77).unwrap();
+            if resource::get_resource(&self.resources, ResourceType::Pic, result).is_some() {
+                return result;
+            }
+        }
+    }
 
-        todo!("Do something with the resource that was loaded")
+    pub fn run(&self) -> Result<(), String> {
+        let sdl_context = sdl2::init().expect("Unable to get SDL context");
 
-        // TODO: Render an image from the game to start with
+        let mut graphics = Graphics::init(&sdl_context);
+
+        // TODO: move examples to examples directory instead
+        let mut resource_number = self.find_resource(0, true);
+        let resource =
+            resource::get_resource(&self.resources, ResourceType::Pic, resource_number).unwrap();
+        graphics.render_resource(resource);
+
+        let mut event_pump = sdl_context.event_pump()?;
+        'running: loop {
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit { .. }
+                    | Event::KeyDown {
+                        keycode: Some(Keycode::Escape),
+                        ..
+                    } => {
+                        break 'running;
+                    }
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Left),
+                        ..
+                    } => {
+                        resource_number = self.find_resource(resource_number, false);
+                        let resource = resource::get_resource(
+                            &self.resources,
+                            ResourceType::Pic,
+                            resource_number,
+                        )
+                        .unwrap();
+                        graphics.render_resource(resource);
+                    }
+                    Event::KeyDown {
+                        keycode: Some(Keycode::Right),
+                        ..
+                    } => {
+                        resource_number = self.find_resource(resource_number, true);
+                        let resource = resource::get_resource(
+                            &self.resources,
+                            ResourceType::Pic,
+                            resource_number,
+                        )
+                        .unwrap();
+                        graphics.render_resource(resource);
+                    }
+                    _ => {}
+                }
+            }
+            ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        }
+
+        Ok(())
     }
 }
