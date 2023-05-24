@@ -523,7 +523,7 @@ fn draw_pattern_rect(
     let size = pattern_brush.size;
     let mut reader = get_texture_reader(texture);
     for dy in -size..=size {
-        for dx in -size..size {
+        for dx in -size..=size + 1 {
             // the interpreter wrapped at 255 not 256 bits
             if reader.position_in_bits().unwrap() == 255 {
                 reader.seek_bits(SeekFrom::Start(0)).unwrap();
