@@ -54,6 +54,7 @@ impl Game {
             }
 
             if resource::get_resource(&self.resources, ResourceType::Pic, result).is_some() {
+                println!("Found {}", result);
                 return result;
             }
         }
