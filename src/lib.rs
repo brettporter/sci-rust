@@ -71,6 +71,11 @@ impl Game {
             resource::get_resource(&self.resources, ResourceType::Pic, resource_number).unwrap();
         graphics.render_resource(resource);
 
+        let _init_script_resource =
+            resource::get_resource(&self.resources, ResourceType::Script, 0).unwrap();
+
+        // TODO: set up the virtual machine and load the play method from the game object in script 000
+
         let mut event_pump = sdl_context.event_pump()?;
         'running: loop {
             for event in event_pump.poll_iter() {
