@@ -42,7 +42,7 @@ fn build_huffman_node(node_data: &[u8], node_index: u8) -> HuffmanNode {
     }
 }
 
-pub(crate) fn huffman_decode(compressed_data: Vec<u8>) -> Vec<u8> {
+pub(crate) fn huffman_decode(compressed_data: &[u8]) -> Vec<u8> {
     let num_nodes = compressed_data[0] as usize;
     let terminator = compressed_data[1];
 
