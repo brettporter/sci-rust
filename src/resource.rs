@@ -35,9 +35,11 @@ struct ResourceMapEntry {
 
 pub(crate) struct Resource {
     resource_type: ResourceType,
-    resource_number: u16,
+    pub resource_number: u16,
 
     // TODO: better way to handle this? For now just raw uncompressed data
+    //  While picture just runs its processing from this perhaps we should have specialised resource structs
+    //  And/or add the read_u16 type methods to this struct
     pub resource_data: Vec<u8>,
 }
 

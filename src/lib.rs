@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path};
 
 use graphics::Graphics;
 use log::info;
+use pmachine::PMachine;
 use resource::{Resource, ResourceType};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -12,7 +13,9 @@ extern crate num_derive;
 
 mod graphics;
 mod picture;
+mod pmachine;
 mod resource;
+mod script;
 
 pub struct Game {
     resources: HashMap<u16, Resource>,
@@ -66,16 +69,20 @@ impl Game {
 
         let mut graphics = Graphics::init(&sdl_context);
 
+        // TODO: initialise event manager
+        // TODO: initialise window manager
+        // TODO: initialise text parser (vocabulary files)
+        // TODO: initialise the music player
+
+        let vm = PMachine::init(&self.resources);
+
+        vm.run_game_play_method();
+
         // TODO: move examples to examples directory instead
         let mut resource_number = self.find_resource(0, true);
         let resource =
             resource::get_resource(&self.resources, ResourceType::Pic, resource_number).unwrap();
         graphics.render_resource(resource);
-
-        let _init_script_resource =
-            resource::get_resource(&self.resources, ResourceType::Script, 0).unwrap();
-
-        // TODO: set up the virtual machine and load the play method from the game object in script 000
 
         let mut event_pump = sdl_context.event_pump()?;
         'running: loop {
