@@ -294,6 +294,8 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
         use_texture: false,
     };
 
+    // TODO: add debug logging
+
     loop {
         match data.read_command() {
             PictureCommand::SetVisualColour => {

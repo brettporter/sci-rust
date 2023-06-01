@@ -6,9 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+# TODO: how to make main/examples only?
+env_logger = "0.10.0"
+
 itertools = "0.10.5"
 num-traits = "0.2"
 num-derive = "0.3"
 bitstream-io = "1.6.0"
 sdl2 = "0.35.2"
 weezl = "0.1.7"
+log = "0.4.18"

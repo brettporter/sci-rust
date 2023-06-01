@@ -2,6 +2,7 @@ use std::time::Duration;
 use std::{collections::HashMap, path::Path};
 
 use graphics::Graphics;
+use log::info;
 use resource::{Resource, ResourceType};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
@@ -54,7 +55,7 @@ impl Game {
             }
 
             if resource::get_resource(&self.resources, ResourceType::Pic, result).is_some() {
-                println!("Found {}", result);
+                info!("Navigating to picture {}", result);
                 return result;
             }
         }
