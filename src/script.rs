@@ -25,10 +25,11 @@ enum ScriptBlockType {
 pub(crate) struct Script<'a> {
     // TODO: add storage for other block types
     exports: Vec<u16>,
+    pub variables: Vec<u16>,
     classes: Vec<ClassDefinition>,
-    objects: Vec<ClassDefinition>,
+    objects: Vec<ObjectDefinition>,
     main_object_name: Option<u16>,
-    data: &'a [u8],
+    pub data: &'a [u8],
 }
 
 struct ScriptBlock<'a> {
@@ -44,6 +45,12 @@ pub(crate) struct ClassDefinition {
     name_offset: u16,
     // TODO: better definition than this
     pub function_selectors: Vec<(u16, u16)>,
+}
+
+pub(crate) struct ObjectDefinition {
+    pub id: u16,
+    // TODO: nest or init by copying?
+    pub class_definition: ClassDefinition,
 }
 
 impl<'a> Script<'a> {
@@ -86,6 +93,7 @@ impl<'a> Script<'a> {
 
         let mut classes = Vec::new();
         let mut objects = Vec::new();
+        let mut variables = Vec::new();
         for block in blocks {
             // TODO: for rest - match on block type and store the data, e.g. exports. Parse it if possible.
             match block.block_type {
@@ -98,7 +106,10 @@ impl<'a> Script<'a> {
                         class_definition.species,
                         class_definition.super_class
                     );
-                    objects.push(class_definition);
+                    objects.push(ObjectDefinition {
+                        id: objects.len() as u16,
+                        class_definition,
+                    });
                 }
                 ScriptBlockType::Code => {
                     debug!("Code (first byte {:x})", block.block_data[0]);
@@ -128,11 +139,15 @@ impl<'a> Script<'a> {
                 }
                 ScriptBlockType::PreloadTextFlag => {
                     // TODO: indicates we must load text.XXX
-                    debug!("Pre-load text (text.{})", resource.resource_number);
+                    debug!("Pre-load text (text.{:0>3})", resource.resource_number);
                     assert!(block.block_data.is_empty());
                 }
                 ScriptBlockType::LocalVariables => {
-                    debug!("Local variables (first byte {:x})", block.block_data[0]);
+                    variables = (0..block.block_data.len())
+                        .step_by(2)
+                        .map(|i| u16::from_le_bytes(block.block_data[i..i + 2].try_into().unwrap()))
+                        .collect_vec();
+                    debug!("Local variables {}", variables.len());
                 }
                 _ => {}
             }
@@ -152,15 +167,16 @@ impl<'a> Script<'a> {
             exports,
             classes,
             objects,
+            variables,
             main_object_name,
             data,
         }
     }
 
-    pub(crate) fn get_main_object(&self) -> &ClassDefinition {
+    pub(crate) fn get_main_object(&self) -> &ObjectDefinition {
         self.objects
             .iter()
-            .find(|&o| Some(o.name_offset) == self.main_object_name)
+            .find(|&o| Some(o.class_definition.name_offset) == self.main_object_name)
             .unwrap()
     }
 
