@@ -209,8 +209,7 @@ mod tests {
                 .as_bytes()
         );
 
-        // todo!("Test a resource with compression")
         // TODO: test a resource with compression
-        // assert the result of the bytes with a hash
+        // TODO: assert the result of the bytes with a hash
     }
 }

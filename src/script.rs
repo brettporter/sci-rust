@@ -24,6 +24,8 @@ enum ScriptBlockType {
 
 pub(crate) struct Script<'a> {
     // TODO: add storage for other block types
+    // TODO: change all the "number" to id
+    pub number: u16,
     exports: Vec<u16>,
     pub variables: Vec<u16>,
     classes: Vec<ClassDefinition>,
@@ -40,7 +42,7 @@ struct ScriptBlock<'a> {
 
 pub(crate) struct ClassDefinition {
     pub script_number: u16, // TODO: we might want a better reference than this
-    species: u16,
+    pub species: u16,
     pub super_class: u16,
     name_offset: u16,
     // TODO: better definition than this
@@ -154,7 +156,8 @@ impl<'a> Script<'a> {
         }
 
         // exports[0] is a reference an object
-        let main_object_name = if !exports.is_empty() {
+        // TODO: should this be done for other scripts as well? Script 997 has 0xfffe in it but others are correct
+        let main_object_name = if resource.resource_number == 0 {
             let main_offset = exports[0] as usize;
             Some(u16::from_le_bytes(
                 data[main_offset + 6..main_offset + 8].try_into().unwrap(),
@@ -164,6 +167,7 @@ impl<'a> Script<'a> {
         };
 
         Self {
+            number: resource.resource_number,
             exports,
             classes,
             objects,
@@ -180,11 +184,8 @@ impl<'a> Script<'a> {
             .unwrap()
     }
 
-    pub(crate) fn get_class(&self, super_class: u16) -> &ClassDefinition {
-        self.classes
-            .iter()
-            .find(|&c| c.species == super_class)
-            .unwrap()
+    pub(crate) fn get_class(&self, species: u16) -> &ClassDefinition {
+        self.classes.iter().find(|&c| c.species == species).unwrap()
     }
 }
 
@@ -206,10 +207,10 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
     // let name = std::str::from_utf8(&data[name_offset..name_offset + len]).unwrap();
     //println!("Class {name}...");
 
-    // TODO: read remaining variable selectors
+    todo!("read remaining variable selectors");
 
     if block.block_type == ScriptBlockType::Class {
-        // TODO: read selector IDs for variables if a class
+        todo!("read selector IDs for variables if a class");
     }
 
     let num_functions = u16::from_le_bytes(
