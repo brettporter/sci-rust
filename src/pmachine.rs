@@ -766,7 +766,6 @@ impl<'a> PMachine<'a> {
             let script = self.load_script(script_num);
 
             let super_class_def = script.get_class(obj_class.super_class);
-            todo!("Extend seemed to be overwriting but now that this is working check if it was actually correct too and simpler");
             for (k, v) in self.get_inherited_functions(super_class_def) {
                 func_selectors.entry(k).or_insert(v);
             }
