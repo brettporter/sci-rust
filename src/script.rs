@@ -30,18 +30,21 @@ pub(crate) struct Script<'a> {
     pub variables: Vec<u16>,
     classes: Vec<ClassDefinition>,
     objects: Vec<ClassDefinition>,
+    strings: Vec<StringDefinition>,
     main_object_name: Option<&'a str>,
     pub data: &'a [u8],
 }
 
 struct ScriptBlock<'a> {
     block_type: ScriptBlockType,
+    block_offset: usize,
     block_size: usize,
     block_data: &'a [u8],
 }
 
 pub(crate) struct ClassDefinition {
     pub script_number: u16, // TODO: we might want a better reference than this
+    offset: usize,
     pub species: u16,
     pub super_class: u16,
     pub name: String,
@@ -49,6 +52,11 @@ pub(crate) struct ClassDefinition {
     pub variable_selectors: Vec<u16>,
     // TODO: better definition than this
     pub function_selectors: Vec<(u16, u16)>,
+}
+
+pub(crate) struct StringDefinition {
+    offset: usize,
+    pub string: String,
 }
 
 impl<'a> Script<'a> {
@@ -70,12 +78,14 @@ impl<'a> Script<'a> {
 
             let block_size =
                 u16::from_le_bytes(data[idx + 2..idx + 4].try_into().unwrap()) as usize;
-            let block_data = &data[idx + 4..idx + block_size];
+            let block_offset = idx + 4;
+            let block_data = &data[block_offset..idx + block_size];
             idx += block_size; // includes header size
 
             debug!("Found block type {:?} size {}", &block_type, block_size);
             blocks.push(ScriptBlock {
                 block_type,
+                block_offset,
                 block_size,
                 block_data,
             });
@@ -92,6 +102,7 @@ impl<'a> Script<'a> {
         let mut classes = Vec::new();
         let mut objects = Vec::new();
         let mut variables = Vec::new();
+        let mut strings = Vec::new();
         for block in blocks {
             // TODO: for rest - match on block type and store the data, e.g. exports. Parse it if possible.
             match block.block_type {
@@ -107,12 +118,22 @@ impl<'a> Script<'a> {
                     debug!("Said spec (first byte {:x})", block.block_data[0]);
                 }
                 ScriptBlockType::Strings => {
-                    // TODO: read all the strings and store them
-                    let s = CStr::from_bytes_until_nul(&block.block_data)
-                        .unwrap()
-                        .to_str()
-                        .unwrap();
-                    debug!("Strings (first string {})", s);
+                    let mut index = 0;
+                    while index < block.block_data.len() {
+                        let string = CStr::from_bytes_until_nul(&block.block_data[index..])
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_string();
+
+                        debug!("String: '{string}'");
+                        let l = string.len() + 1;
+                        strings.push(StringDefinition {
+                            offset: index + block.block_offset,
+                            string,
+                        });
+                        index += l;
+                    }
                 }
                 ScriptBlockType::Class => {
                     let class_definition = parse_class_definition(&block, &resource);
@@ -165,20 +186,30 @@ impl<'a> Script<'a> {
             classes,
             objects,
             variables,
+            strings,
             main_object_name,
             data,
         }
     }
 
     pub(crate) fn get_main_object(&self) -> &ClassDefinition {
-        self.objects
-            .iter()
-            .find(|&o| o.name == self.main_object_name.unwrap())
-            .unwrap()
+        self.get_object(self.main_object_name.unwrap())
     }
 
     pub(crate) fn get_class(&self, species: u16) -> &ClassDefinition {
         self.classes.iter().find(|&c| c.species == species).unwrap()
+    }
+
+    pub(crate) fn get_object(&self, name: &str) -> &ClassDefinition {
+        self.objects.iter().find(|&o| o.name == name).unwrap()
+    }
+
+    pub(crate) fn get_string_by_offset(&self, offset: usize) -> Option<&StringDefinition> {
+        self.strings.iter().find(|&s| s.offset == offset)
+    }
+
+    pub(crate) fn get_object_by_offset(&self, offset: usize) -> Option<&ClassDefinition> {
+        self.objects.iter().find(|&o| o.offset == offset)
     }
 }
 
@@ -251,6 +282,7 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
     // TODO: species, super_class, name_offset are duplicated, would it be better to add helper methods to class definition into the variables and then remove the destructuring in here?
     ClassDefinition {
         script_number: resource.resource_number,
+        offset: block.block_offset + 8,
         species,
         super_class,
         name,
