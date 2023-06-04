@@ -75,12 +75,12 @@ impl MachineState<'_> {
     }
 }
 
-// TODO: we are going to need to deal with object's that get instantiated from a class or clone, so will not be uniquely identified by name in the cache. Put a handle in the register for these.
 #[derive(Debug)]
 struct ObjectInstance {
     name: String,
     species: u16,
     variables: Vec<u16>,
+    var_selectors: Vec<u16>,
     func_selectors: HashMap<u16, (u16, u16)>,
 }
 impl ObjectInstance {
@@ -88,7 +88,12 @@ impl ObjectInstance {
         *self.func_selectors.get(&selector).unwrap()
     }
 
-    fn get_variable_by_offset(&self, offset: u8) -> u16 {
+    fn has_var_selector(&self, selector: u16) -> bool {
+        self.var_selectors.iter().contains(&selector)
+    }
+
+    fn get_property_by_offset(&self, offset: u8) -> u16 {
+        // TODO: rename to properties?
         self.variables[offset as usize / 2]
     }
 }
@@ -188,11 +193,13 @@ impl<'a> PMachine<'a> {
     }
 
     fn initialise_object(&self, obj: &crate::script::ClassDefinition) -> &ObjectInstance {
-        // todo!("return from cache");
+        // TODO: we are going to need to deal with object's that get instantiated from a class or clone, so will not be uniquely identified by name in the cache. Put a handle in the register for these.
+        todo!("return from cache or determine if this is creating a new one");
         let instance = ObjectInstance {
             name: String::from(&obj.name),
             species: obj.species,
             variables: obj.variables.clone(), // TODO: is clone necessary?
+            var_selectors: obj.variable_selectors.clone(), // TODO: is clone necessary?
             func_selectors: self.get_inherited_functions(&obj),
         };
         self.object_cache
@@ -200,13 +207,14 @@ impl<'a> PMachine<'a> {
     }
 
     fn initialise_class(&self, class: &crate::script::ClassDefinition) -> &ObjectInstance {
-        // todo!("return from cache");
-        // todo!("Need to work out classes vs objects here");
+        todo!("return from cache");
+        todo!("Need to work out classes vs objects here");
         // TODO: should it be an object instance?
         let instance = ObjectInstance {
             name: String::from(&class.name),
             species: class.species,
             variables: class.variables.clone(), // TODO: is clone necessary?
+            var_selectors: class.variable_selectors.clone(), // TODO: is clone necessary?
             func_selectors: self.get_inherited_functions(&class),
         };
         self.class_cache.insert(class.species, Box::new(instance))
@@ -247,20 +255,21 @@ impl<'a> PMachine<'a> {
         let mut stack: Vec<Register> = Vec::new();
 
         let mut call_stack: Vec<StackFrame> = Vec::new();
-        //todo!("Sort out variable pointers approach");
+        todo!("Sort out variable pointers approach");
         //var: [u16; 4], // variable points for each type (global, local, temporary, param) -- TODO: expand below instead?
         // TODO: maybe actually create slice to refer to?
+        // TODO: try and clean these up and remove here as we use the call stack for multiple function selectors
         let mut num_params = 0; // TODO: is this relevant without a call stack?
         let mut params_pos = 0; // TODO: is this relevant without a call stack?
         let mut temp_pos = 0; // TODO: is this relevant without a call stack?
 
-        // todo!("get variables from all loaded scripts, rather than loading again");
+        // TODO: get variables from all loaded scripts, rather than loading again
         let mut global_vars: Vec<Register> = self
             .load_script(SCRIPT_MAIN)
             .variables
             .iter()
             .map(|&v| {
-                // todo!("Special casing a bit weird here, just treat as signed if we think safe");
+                todo!("Special casing a bit weird here, just treat as signed if we think safe");
                 if v == 0xffff {
                     Register::Value(-1)
                 } else {
@@ -392,7 +401,7 @@ impl<'a> PMachine<'a> {
                     // call W relpos, B framesize
                     let rel_pos = state.read_i16();
 
-                    // todo!("can we reuse from send?");
+                    todo!("can we reuse from send?");
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2 - 1;
@@ -411,7 +420,7 @@ impl<'a> PMachine<'a> {
 
                     // As opposed to send, does not start with selector
                     num_params = stack[stackframe_start].to_u16();
-                    // todo!("maybe replace < num_params with being < temp_pos below, though still an opportunity to make a better frame with params/temp separate");
+                    todo!("maybe replace < num_params with being < temp_pos below, though still an opportunity to make a better frame with params/temp separate");
 
                     state.jump(rel_pos);
                     params_pos = stackframe_start; // argc is included
@@ -426,8 +435,8 @@ impl<'a> PMachine<'a> {
                     assert_eq!(num_params, k_params as i16);
 
                     // call command, put return value into ax
-                    // todo!("separate method probably");
-                    // todo!("Set up a parameter slice rather than indexing into the stack");
+                    todo!("separate method probably");
+                    todo!("Set up a parameter slice rather than indexing into the stack");
                     match k_func {
                         0x00 => {
                             // Load
@@ -521,90 +530,88 @@ impl<'a> PMachine<'a> {
                 }
                 0x4a | 0x4b => {
                     // send B
-                    let obj = ax.to_obj();
+                    todo!("This will need to change when objects are on the heap and not a single cache");
+                    // TODO: bit awkward, to appease the borrow checker of what is stored in ax
+                    let obj = if let Some(o) = self.object_cache.get(&ax.to_obj().name) {
+                        o
+                    } else if let Some(c) = self.class_cache.get(&ax.to_obj().species) {
+                        c
+                    } else {
+                        todo!(
+                            "Didn't find ax object {} in objects or classes",
+                            &ax.to_obj().name
+                        );
+                    };
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2;
-                    let stackframe = &stack[stackframe_start..];
-                    // todo!("need to support looping multiple selectors - at least start by asserting when we spot it");
-                    // TODO: assert we don't have multiple functions or variables after functions - haven't yet coded to support this
-                    let selector = stackframe[0].to_u16();
-                    let np = stackframe[1].to_u16();
-                    // assert_eq!(stackframe_end, stackframe_start + 2 + num_params as usize); -- TODO: remove once we handle the multiple case
 
-                    // todo!("Handle variables here {selector}");
-                    debug!("Handle variables here {} {:x}", obj.name, selector);
-                    // TODO: some rough hacky structure needed here
-                    if selector == 225
-                        || selector == 97
-                        || selector == 130
-                        || selector == 5
-                        || selector == 98
-                        || selector == 104
-                        || selector == 210
-                        || selector == 211
-                        || selector == 107
-                        || selector == 34
-                        || selector == 59
-                        || selector == 4
-                        || selector == 205
-                        || selector == 3
-                        || selector == 206
-                        || selector == 227
-                        || selector == 254
-                        || selector == 27
-                        || selector == 76
-                        || selector == 111
-                        || selector == 0x1c
-                    {
-                        if np == 0 {
-                            // get
-                            ax = Register::Value(0); // TODO: set to the variable value if no paramters
-                        } else {
-                            // TODO: set
-                        }
-
-                        // Unwind stack
-                        stack.truncate(stackframe_start);
-                        continue; // TODO: this actually needs to go to the next selector if present, just not run the function bit
+                    let mut read_selectors_idx = stackframe_start;
+                    let mut selectors = Vec::new();
+                    while read_selectors_idx < stackframe_end {
+                        // TODO: types
+                        let (selector, np) = (
+                            stack[read_selectors_idx].to_u16(),
+                            stack[read_selectors_idx + 1].to_u16(),
+                        );
+                        read_selectors_idx += 1;
+                        selectors.push((selector, np, read_selectors_idx));
+                        read_selectors_idx += np as usize + 1;
                     }
-                    let (script_number, code_offset) = obj.get_func_selector(selector);
-                    debug!(
-                        "Call send on function {selector} -> {script_number} @{:x} {}",
-                        code_offset, obj.name
-                    ); // TODO: show parameters?
 
-                    let current_script = script.number;
+                    // TODO: super temporary to get this working
+                    let mut count = 0;
+                    for (selector, np, pos) in &selectors {
+                        count += 1;
+                        if obj.has_var_selector(*selector) {
+                            if *np == 0 {
+                                // get
+                                ax = Register::Value(0); // TODO: set to the variable value if no paramters
+                                todo!();
+                            } else {
+                                // TODO: set
+                                todo!("how to handle mutating object");
+                            }
+                            if count == selectors.len() {
+                                // Unwind stack as ret will not be called
+                                stack.truncate(stackframe_start);
+                            }
+                        } else {
+                            todo!("assert last one, we don't have a way to recursively send for functions yet");
+                            assert_eq!(count, selectors.len());
 
-                    call_stack.push(StackFrame {
-                        // Unwind position
-                        stackframe_start,
-                        // Saving these to return to
-                        params_pos,
-                        temp_pos,
-                        num_params,
-                        script_number: current_script,
-                        ip: state.ip,
-                        obj: state.current_obj,
-                    });
+                            let (script_number, code_offset) = obj.get_func_selector(*selector);
+                            debug!(
+                                "Call send on function {selector} -> {script_number} @{:x} {}",
+                                code_offset, obj.name
+                            ); // TODO: show parameters?
 
-                    if script_number != current_script {
-                        script = self.load_script(script_number);
-                        state.code = script.data;
-                    };
-                    state.ip = code_offset as usize;
-                    // TODO: bit awkward, to appease the borrow checker of what is stored in ax
-                    state.current_obj = if let Some(o) = self.object_cache.get(&obj.name) {
-                        o
-                    } else if let Some(c) = self.class_cache.get(&obj.species) {
-                        c
-                    } else {
-                        todo!("Didn't find ax object {} in objects or classes", &obj.name);
-                    };
-                    params_pos = stackframe_start + 1; // skip the selector
-                    temp_pos = stackframe_end;
-                    num_params = np;
+                            let current_script = script.number;
+
+                            call_stack.push(StackFrame {
+                                // Unwind position
+                                stackframe_start,
+                                // Saving these to return to
+                                params_pos,
+                                temp_pos,
+                                num_params,
+                                script_number: current_script,
+                                ip: state.ip,
+                                obj: state.current_obj,
+                            });
+
+                            if script_number != current_script {
+                                script = self.load_script(script_number);
+                                state.code = script.data;
+                            };
+                            state.ip = code_offset as usize;
+                            state.current_obj = obj;
+                            params_pos = *pos;
+                            temp_pos = stackframe_end;
+                            num_params = *np;
+                        }
+                    }
                 }
                 0x51 => {
                     // class B
@@ -626,15 +633,15 @@ impl<'a> PMachine<'a> {
                     // self B selector
                     let obj = state.current_obj;
 
-                    // todo!("reuse copy-pasta from send");
+                    todo!("reuse copy-pasta from send");
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2;
                     let stackframe = &stack[stackframe_start..];
                     let selector = stackframe[0].to_u16();
                     let np = stackframe[1].to_u16();
-                    // TODO: loop selectors -- see send
-                    //assert_eq!(stackframe_end, stackframe_start + 2 + num_params as usize);
+                    // TODO: this will fail if multiple selectors
+                    assert_eq!(stackframe_end, stackframe_start + 2 + np as usize);
 
                     // TODO: handle variables as well
                     let (script_number, code_offset) = obj.get_func_selector(selector);
@@ -668,7 +675,7 @@ impl<'a> PMachine<'a> {
                     // super B class B stackframe
                     let class_num = state.read_u8() as u16;
 
-                    // todo!("re-use copy-pasta from class");
+                    todo!("re-use copy-pasta from class");
                     let script_number = self.class_scripts[&class_num];
                     let s = if script_number != script.number {
                         self.load_script(script_number)
@@ -679,16 +686,17 @@ impl<'a> PMachine<'a> {
                     let class = s.get_class(class_num);
                     let obj = self.initialise_class(class);
 
-                    // todo!("re-use copy-pasta from send");
+                    todo!("re-use copy-pasta from send");
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2;
                     let stackframe = &stack[stackframe_start..];
                     let selector = stackframe[0].to_u16();
                     let np = stackframe[1].to_u16();
-                    // assert_eq!(stackframe_end, stackframe_start + 2 + num_params as usize);
+                    // TODO: this will fail if multiple selectors
+                    assert_eq!(stackframe_end, stackframe_start + 2 + np as usize);
 
-                    // todo!("handle variables as well? Does that make sense on a super class?");
+                    // Note there's an assumption that variables are not sent for here since it is a class not an object
                     let (script_number, code_offset) = obj.get_func_selector(selector);
                     debug!(
                         "Call super {class_num} {selector} -> {script_number} @{:x}",
@@ -727,7 +735,7 @@ impl<'a> PMachine<'a> {
                     let use_acc = (var_type & 0b10000) != 0;
                     let var_type_num = var_type & 0b110 >> 1; // TODO: convert to VariableType and then match
 
-                    // todo!("Load effective address {var_type_num} {use_acc} {var_index}");
+                    todo!("Load effective address {var_type_num} {use_acc} {var_index}");
                     // TODO: ax = &(vars[var_type_num][use_acc ? vi+acc : vi])
                 }
                 0x5c | 0x5d => {
@@ -738,16 +746,41 @@ impl<'a> PMachine<'a> {
                     // pToa B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to acc");
-                    ax = Register::Value(state.current_obj.get_variable_by_offset(offset) as i16);
-                    // TODO: address signed value
-                    // TODO: can a variable be an object though?
-                    // todo!("check implementation");
+                    ax = Register::Value(state.current_obj.get_property_by_offset(offset) as i16);
+                    todo!("assert we didn't get a large unsigned value");
+                    todo!("can a variable be an object though?");
                 }
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
-                    // todo!("what's needed here? assume this means the variable values, is offset signed?");
                     debug!("acc to property @offset {offset}");
+                    todo!("How to handle mutating current_obj?");
+                    // state
+                    //     .current_obj
+                    //     .set_property_by_offset(offset, ax.to_i16());
+                    // self.variables[offset as usize / 2] = value as u16;
+                    todo!("assert we didn't get a large unsigned value");
+                    todo!("can a variable be an object though?");
+                }
+                0x67 => {
+                    // pTos B offset
+                    let offset = state.read_u8();
+                    debug!("property @offset {offset} to stack");
+                    stack.push(Register::Value(
+                        state.current_obj.get_property_by_offset(offset) as i16,
+                    ));
+                    todo!("assert we didn't get a large unsigned value");
+                    todo!("can a variable be an object though?");
+                }
+                0x6b => {
+                    // ipToa B offset
+                    let offset = state.read_u8();
+                    debug!("increment property @offset {offset} to acc");
+                    todo!("increment the property - how to handle mutation");
+                    // This will probably infinite loop
+                    ax = Register::Value(state.current_obj.get_property_by_offset(offset) as i16);
+                    todo!("assert we didn't get a large unsigned value");
+                    todo!("can a variable be an object though?");
                 }
                 0x72 => {
                     // lofsa W
@@ -765,7 +798,7 @@ impl<'a> PMachine<'a> {
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
                         // TODO: support 'said'
-                        // todo!("Unknown method loading from address {:x}", v);
+                        todo!("Unknown method loading from address {:x}", v);
                         Register::Undefined
                     };
                 }
@@ -802,14 +835,10 @@ impl<'a> PMachine<'a> {
                     // lap B
                     let var = state.read_u8() as u16;
                     debug!("load parameter {} to acc", var);
-                    // If this many parameters were not given, return 0 instead
-                    // todo!("Check this is the correct behaviour");
-                    ax = if var <= num_params {
-                        stack[params_pos + var as usize]
-                    } else {
-                        todo!("Got undefined! {} {} {}", var, num_params, params_pos);
-                        Register::Undefined
-                    };
+
+                    // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
+                    assert!(var <= num_params);
+                    ax = stack[params_pos + var as usize];
                 }
                 0x89 => {
                     // lsg B
@@ -827,27 +856,17 @@ impl<'a> PMachine<'a> {
                     // lsp B
                     let var = state.read_u8() as u16;
                     debug!("load parameter {} to stack", var);
-                    // If this many parameters were not given, return 0 instead
-                    // todo!("Check this is the correct behaviour - do we push 0 or do nothing?");
-                    stack.push(if var <= num_params {
-                        stack[params_pos + var as usize]
-                    } else {
-                        todo!("Got undefined! {} {} {}", var, num_params, params_pos);
-                        Register::Undefined
-                    });
+                    // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
+                    assert!(var <= num_params);
+                    stack.push(stack[params_pos + var as usize]);
                 }
                 0x97 => {
                     // lapi B
                     let var = state.read_u8() as u16 + ax.to_u16();
                     debug!("load parameter {} to acc", var);
-                    // If this many parameters were not given, return 0 instead
-                    // todo!("Check this is the correct behaviour");
-                    ax = if var <= num_params {
-                        stack[params_pos + var as usize]
-                    } else {
-                        todo!("Got undefined! {} {} {}", var, num_params, params_pos);
-                        Register::Undefined
-                    };
+                    // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
+                    assert!(var <= num_params);
+                    ax = stack[params_pos + var as usize];
                 }
                 0x98 => {
                     // lsgi W
@@ -871,7 +890,7 @@ impl<'a> PMachine<'a> {
                     // sal B
                     let var = state.read_u8();
                     debug!("store accumulator to local {}", var);
-                    // todo!("store local var");
+                    todo!("store local var");
                 }
                 0xa5 => {
                     // sat B
