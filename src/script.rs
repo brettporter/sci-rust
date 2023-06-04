@@ -29,8 +29,8 @@ pub(crate) struct Script<'a> {
     exports: Vec<u16>,
     pub variables: Vec<u16>,
     classes: Vec<ClassDefinition>,
-    objects: Vec<ObjectDefinition>,
-    main_object_name: Option<u16>,
+    objects: Vec<ClassDefinition>,
+    main_object_name: Option<&'a str>,
     pub data: &'a [u8],
 }
 
@@ -44,15 +44,11 @@ pub(crate) struct ClassDefinition {
     pub script_number: u16, // TODO: we might want a better reference than this
     pub species: u16,
     pub super_class: u16,
-    name_offset: u16,
+    pub name: String,
+    pub variables: Vec<u16>,
+    pub variable_selectors: Vec<u16>,
     // TODO: better definition than this
     pub function_selectors: Vec<(u16, u16)>,
-}
-
-pub(crate) struct ObjectDefinition {
-    pub id: u16,
-    // TODO: nest or init by copying?
-    pub class_definition: ClassDefinition,
 }
 
 impl<'a> Script<'a> {
@@ -101,17 +97,7 @@ impl<'a> Script<'a> {
             match block.block_type {
                 ScriptBlockType::Object => {
                     let class_definition = parse_class_definition(&block, &resource);
-                    // TODO: could show name
-                    debug!(
-                        "Object {} (species = {}, super class = {})",
-                        objects.len(),
-                        class_definition.species,
-                        class_definition.super_class
-                    );
-                    objects.push(ObjectDefinition {
-                        id: objects.len() as u16,
-                        class_definition,
-                    });
+                    objects.push(class_definition);
                 }
                 ScriptBlockType::Code => {
                     debug!("Code (first byte {:x})", block.block_data[0]);
@@ -159,9 +145,16 @@ impl<'a> Script<'a> {
         // TODO: should this be done for other scripts as well? Script 997 has 0xfffe in it but others are correct
         let main_object_name = if resource.resource_number == 0 {
             let main_offset = exports[0] as usize;
-            Some(u16::from_le_bytes(
-                data[main_offset + 6..main_offset + 8].try_into().unwrap(),
-            ))
+            let name_offset =
+                u16::from_le_bytes(data[main_offset + 6..main_offset + 8].try_into().unwrap())
+                    as usize;
+            // TODO: can we get this from string instead?
+            Some(
+                CStr::from_bytes_until_nul(&data[name_offset..])
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
         } else {
             None
         };
@@ -177,10 +170,10 @@ impl<'a> Script<'a> {
         }
     }
 
-    pub(crate) fn get_main_object(&self) -> &ObjectDefinition {
+    pub(crate) fn get_main_object(&self) -> &ClassDefinition {
         self.objects
             .iter()
-            .find(|&o| Some(o.class_definition.name_offset) == self.main_object_name)
+            .find(|&o| o.name == self.main_object_name.unwrap())
             .unwrap()
     }
 
@@ -192,26 +185,43 @@ impl<'a> Script<'a> {
 fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefinition {
     let magic = u16::from_le_bytes(block.block_data[0..2].try_into().unwrap());
     assert_eq!(magic, 0x1234);
-    let local_vars_offset = u16::from_le_bytes(block.block_data[2..4].try_into().unwrap());
-    assert_eq!(local_vars_offset, 0);
+    let vars_offset = u16::from_le_bytes(block.block_data[2..4].try_into().unwrap());
+    assert_eq!(vars_offset, 0);
     let func_selector_offset =
         u16::from_le_bytes(block.block_data[4..6].try_into().unwrap()) as usize;
     let num_variables = u16::from_le_bytes(block.block_data[6..8].try_into().unwrap());
-    let species = u16::from_le_bytes(block.block_data[8..10].try_into().unwrap());
-    let super_class = u16::from_le_bytes(block.block_data[10..12].try_into().unwrap());
-    let info = u16::from_le_bytes(block.block_data[12..14].try_into().unwrap());
-    let name_offset = u16::from_le_bytes(block.block_data[14..16].try_into().unwrap());
 
-    // TODO: do we need the name? should be an offset into strings table, so we could create a lookup for this. Consider CStr::from_bytes_until_nul to read asciiz.
-    // let len = data[name_offset..].iter().position(|x| *x == 0).unwrap();
-    // let name = std::str::from_utf8(&data[name_offset..name_offset + len]).unwrap();
-    //println!("Class {name}...");
+    // Load variable values
+    // TODO: load as mapped to selectors from the species or just an array we index into?
+    let variables = (0..num_variables)
+        .map(|i| {
+            let offset = i as usize * 2 + 8;
+            u16::from_le_bytes(block.block_data[offset..offset + 2].try_into().unwrap())
+        })
+        .collect_vec();
+    let [species, super_class, _info, name_offset] = variables[0..4] else {
+        panic!("Class definition without all Obj variables: {:?}", variables);
+    };
 
-    todo!("read remaining variable selectors");
+    // TODO: do we need the name? should be an offset into strings table, so we could create a lookup for this instead of parsing again
+    let name = CStr::from_bytes_until_nul(&resource.resource_data[name_offset as usize..])
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    debug!("Parsing {:?} {name}", block.block_type);
 
-    if block.block_type == ScriptBlockType::Class {
-        todo!("read selector IDs for variables if a class");
-    }
+    let variable_selectors = if block.block_type == ScriptBlockType::Class {
+        let selector_data =
+            &block.block_data[8 + num_variables as usize * 2..8 + num_variables as usize * 4];
+        (0..selector_data.len())
+            .step_by(2)
+            .map(|offset| u16::from_le_bytes(selector_data[offset..offset + 2].try_into().unwrap()))
+            .collect_vec()
+    } else {
+        // TODO: do we want to get them from the super class if it's already defined? Or fill it in later?
+        Vec::new()
+    };
 
     let num_functions = u16::from_le_bytes(
         block.block_data[func_selector_offset + 6..func_selector_offset + 8]
@@ -238,11 +248,14 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
         })
         .collect_vec();
 
+    // TODO: species, super_class, name_offset are duplicated, would it be better to add helper methods to class definition into the variables and then remove the destructuring in here?
     ClassDefinition {
         script_number: resource.resource_number,
         species,
         super_class,
-        name_offset,
+        name,
+        variables,
+        variable_selectors,
         function_selectors,
     }
 }

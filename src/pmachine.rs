@@ -13,7 +13,7 @@ pub(crate) struct PMachine<'a> {
     class_scripts: HashMap<u16, u16>,
     play_selector: u16,
     script_cache: FrozenMap<u16, Box<Script<'a>>>,
-    object_cache: FrozenVec<Box<ObjectInstance>>, // TODO: forever growing...
+    object_cache: FrozenMap<String, Box<ObjectInstance>>,
     class_cache: FrozenMap<u16, Box<ObjectInstance>>,
 }
 
@@ -64,8 +64,9 @@ impl MachineState<'_> {
     }
 }
 
+#[derive(Clone)]
 struct ObjectInstance {
-    id: u16,
+    name: String,
     func_selectors: HashMap<u16, (u16, u16)>,
 }
 impl ObjectInstance {
@@ -132,7 +133,7 @@ impl<'a> PMachine<'a> {
             class_scripts,
             play_selector,
             script_cache: FrozenMap::new(),
-            object_cache: FrozenVec::new(),
+            object_cache: FrozenMap::new(),
             class_cache: FrozenMap::new(),
         }
     }
@@ -144,26 +145,23 @@ impl<'a> PMachine<'a> {
         self.initialise_object(init_script.get_main_object())
     }
 
-    fn initialise_object(&self, obj: &crate::script::ObjectDefinition) -> &ObjectInstance {
-        todo!("Need to work out object IDs and how these are going to be referenced");
-        let obj = ObjectInstance {
-            id: obj.id, // TODO: not currently globally unique, which might be a problem
-            func_selectors: self.get_inherited_functions(&obj.class_definition),
+    fn initialise_object(&self, obj: &crate::script::ClassDefinition) -> &ObjectInstance {
+        let instance = ObjectInstance {
+            name: String::from(&obj.name),
+            func_selectors: self.get_inherited_functions(&obj),
         };
-        todo!("HACK");
-        // self.object_cache.insert(obj.id, Box::new(obj))
-        self.object_cache.push(Box::new(obj));
-        self.object_cache.last().unwrap()
+        self.object_cache
+            .insert(String::from(&obj.name), Box::new(instance))
     }
 
-    // TODO: should it be an object instance?
     fn initialise_class(&self, class: &crate::script::ClassDefinition) -> &ObjectInstance {
         todo!("Need to work out classes vs objects here");
-        let class = ObjectInstance {
-            id: class.species, // TODO: is ID relevant any more?
+        // TODO: should it be an object instance?
+        let instance = ObjectInstance {
+            name: String::from(class.name),
             func_selectors: self.get_inherited_functions(&class),
         };
-        self.class_cache.insert(class.id, Box::new(class))
+        self.class_cache.insert(class.species, Box::new(instance))
     }
 
     pub(crate) fn run_game_play_method(&self) {
@@ -452,8 +450,8 @@ impl<'a> PMachine<'a> {
                     // }
                     let (script_number, code_offset) = obj.get_func_selector(selector);
                     debug!(
-                        "Call send on function {selector} -> {script_number} @{:x} #{}",
-                        code_offset, ax_obj.id
+                        "Call send on function {selector} -> {script_number} @{:x} {}",
+                        code_offset, ax_obj.name
                     ); // TODO: show parameters?
 
                     let current_script = script.number;
