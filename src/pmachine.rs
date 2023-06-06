@@ -243,10 +243,7 @@ impl<'a> PMachine<'a> {
         let mut stack: Vec<Register> = Vec::new();
 
         let mut call_stack: Vec<StackFrame> = Vec::new();
-        todo!("Sort out variable pointers approach");
-        //var: [u16; 4], // variable points for each type (global, local, temporary, param) -- TODO: expand below instead?
-        // TODO: maybe actually create slice to refer to?
-        // TODO: try and clean these up and remove here as we use the call stack for multiple function selectors
+        // todo!("try and clean these up and remove here as we use the call stack for multiple function selectors");
         let mut num_params = 0; // TODO: is this relevant without a call stack?
         let mut params_pos = 0; // TODO: is this relevant without a call stack?
         let mut temp_pos = 0; // TODO: is this relevant without a call stack?
@@ -257,13 +254,9 @@ impl<'a> PMachine<'a> {
             .variables
             .iter()
             .map(|&v| {
-                todo!("Special casing a bit weird here, just treat as signed if we think safe");
-                if v == 0xffff {
-                    Register::Value(-1)
-                } else {
-                    assert!(v <= i16::MAX as u16);
-                    Register::Value(v as i16)
-                }
+                // TODO: remove this assertion when we are confident an i16 can be used
+                assert!(v <= i16::MAX as u16 || v == 0xffff);
+                Register::Value(v as i16)
             })
             .collect_vec();
 
