@@ -1,6 +1,6 @@
-use std::{collections::HashMap, ffi::CStr};
+use std::{cell::RefCell, collections::HashMap};
 
-use elsa::{FrozenMap, FrozenVec};
+use elsa::FrozenMap;
 use itertools::Itertools;
 use log::{debug, info};
 
@@ -24,14 +24,14 @@ enum VariableType {
     Paramter,
 }
 
-struct StackFrame<'a> {
+struct StackFrame {
     stackframe_start: usize,
     params_pos: usize,
     temp_pos: usize,
     num_params: u16,
     script_number: u16,
     ip: usize,
-    obj: &'a ObjectInstance,
+    obj: usize,
 }
 
 struct MachineState<'a> {
@@ -79,7 +79,7 @@ struct ObjectInstance {
     id: usize,
     name: String,
     species: u16,
-    variables: Vec<u16>,
+    variables: RefCell<Vec<Register>>,
     var_selectors: Vec<u16>,
     func_selectors: HashMap<u16, (u16, u16)>,
 }
@@ -92,22 +92,44 @@ impl ObjectInstance {
         self.var_selectors.iter().contains(&selector)
     }
 
-    fn get_property_by_offset(&self, offset: u8) -> u16 {
+    fn get_property_by_offset(&self, offset: u8) -> Register {
         // TODO: rename to properties?
-        self.variables[offset as usize / 2]
+        self.variables.borrow()[offset as usize / 2]
+    }
+
+    fn set_property_by_offset(&self, offset: u8, value: Register) {
+        self.variables.borrow_mut()[offset as usize / 2] = value
+    }
+
+    fn get_property(&self, selector: u16) -> Register {
+        let (idx, _) = self
+            .var_selectors
+            .iter()
+            .find_position(|&s| *s == selector)
+            .unwrap();
+        self.variables.borrow()[idx]
+    }
+
+    fn set_property(&self, selector: u16, value: Register) {
+        let (idx, _) = self
+            .var_selectors
+            .iter()
+            .find_position(|&s| *s == selector)
+            .unwrap();
+        self.variables.borrow_mut()[idx] = value
     }
 }
 
 // TODO: get rid of lifetime in here
 #[derive(Copy, Clone, Debug)]
-enum Register<'a> {
+enum Register {
     Value(i16),
-    Object(&'a ObjectInstance),
-    String(&'a String),
+    Object(usize),
+    // String(usize),
     // TODO: include heap pointers?
     Undefined,
 }
-impl Register<'_> {
+impl Register {
     fn to_i16(&self) -> i16 {
         match *self {
             Register::Value(v) => v,
@@ -115,8 +137,8 @@ impl Register<'_> {
         }
     }
 
-    fn to_obj(&self) -> &ObjectInstance {
-        match self {
+    fn to_obj(&self) -> usize {
+        match *self {
             Register::Object(v) => v,
             _ => panic!("Register was not an object"),
         }
@@ -202,7 +224,12 @@ impl<'a> PMachine<'a> {
             id: obj.id(),
             name: String::from(&obj.name),
             species: obj.species,
-            variables: obj.variables.clone(), // TODO: is clone necessary?
+            variables: RefCell::new(
+                obj.variables
+                    .iter()
+                    .map(|&v| Register::Value(v as i16)) // TODO: check cast
+                    .collect_vec(),
+            ), // TODO: is clone necessary?
             var_selectors: obj.variable_selectors.clone(), // TODO: is clone necessary?
             func_selectors: self.get_inherited_functions(&obj),
         };
@@ -397,7 +424,7 @@ impl<'a> PMachine<'a> {
                         num_params,
                         script_number: script.number,
                         ip: state.ip,
-                        obj: state.current_obj,
+                        obj: state.current_obj.id,
                     });
 
                     // As opposed to send, does not start with selector
@@ -449,7 +476,7 @@ impl<'a> PMachine<'a> {
                         state.code = script.data;
                     };
                     state.ip = frame.ip;
-                    state.current_obj = frame.obj;
+                    state.current_obj = self.object_cache.get(&frame.obj).unwrap();
 
                     let unwind_pos = frame.stackframe_start;
                     stack.truncate(unwind_pos);
@@ -459,16 +486,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x4a | 0x4b => {
                     // send B
-                    todo!("This will need to change when objects are on the heap and not a single cache");
-                    // TODO: bit awkward, to appease the borrow checker of what is stored in ax
-                    let obj = if let Some(o) = self.object_cache.get(&ax.to_obj().id) {
-                        o
-                    } else {
-                        todo!(
-                            "Didn't find ax object {} in objects or classes",
-                            &ax.to_obj().name
-                        );
-                    };
+                    let obj = self.object_cache.get(&ax.to_obj()).unwrap();
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
@@ -492,19 +510,20 @@ impl<'a> PMachine<'a> {
                     for (selector, np, pos) in &selectors {
                         count += 1;
                         if obj.has_var_selector(*selector) {
+                            // Variable
                             if *np == 0 {
                                 // get
-                                ax = Register::Value(0); // TODO: set to the variable value if no paramters
+                                ax = obj.get_property(*selector);
                                 todo!();
                             } else {
-                                // TODO: set
-                                todo!("how to handle mutating object");
+                                obj.set_property(*selector, ax);
                             }
                             if count == selectors.len() {
                                 // Unwind stack as ret will not be called
                                 stack.truncate(stackframe_start);
                             }
                         } else {
+                            // Function
                             todo!("assert last one, we don't have a way to recursively send for functions yet");
                             assert_eq!(count, selectors.len());
 
@@ -525,7 +544,7 @@ impl<'a> PMachine<'a> {
                                 num_params,
                                 script_number: current_script,
                                 ip: state.ip,
-                                obj: state.current_obj,
+                                obj: state.current_obj.id,
                             });
 
                             if script_number != current_script {
@@ -553,9 +572,8 @@ impl<'a> PMachine<'a> {
 
                     let class = s.get_class(num);
                     debug!("class {} {}", class.script_number, num);
-                    todo!("not sure if we are creating an object from this class, or need a different register type for the class");
                     let instance = self.initialise_object(class);
-                    ax = Register::Object(instance);
+                    ax = Register::Object(instance.id);
                 }
                 0x54 | 0x55 => {
                     // self B selector
@@ -586,7 +604,7 @@ impl<'a> PMachine<'a> {
                         num_params,
                         script_number: current_script,
                         ip: state.ip,
-                        obj: state.current_obj,
+                        obj: state.current_obj.id,
                     });
 
                     if script_number != current_script {
@@ -643,7 +661,7 @@ impl<'a> PMachine<'a> {
                         num_params,
                         script_number: current_script,
                         ip: state.ip,
-                        obj: state.current_obj,
+                        obj: state.current_obj.id,
                     });
 
                     if script_number != current_script {
@@ -669,47 +687,42 @@ impl<'a> PMachine<'a> {
                 }
                 0x5c | 0x5d => {
                     // selfID
-                    ax = Register::Object(state.current_obj);
+                    ax = Register::Object(state.current_obj.id);
                 }
                 0x63 => {
                     // pToa B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to acc");
-                    ax = Register::Value(state.current_obj.get_property_by_offset(offset) as i16);
                     todo!("assert we didn't get a large unsigned value");
                     todo!("can a variable be an object though?");
+                    ax = state.current_obj.get_property_by_offset(offset);
                 }
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
                     debug!("acc to property @offset {offset}");
-                    todo!("How to handle mutating current_obj?");
-                    // state
-                    //     .current_obj
-                    //     .set_property_by_offset(offset, ax.to_i16());
-                    // self.variables[offset as usize / 2] = value as u16;
                     todo!("assert we didn't get a large unsigned value");
                     todo!("can a variable be an object though?");
+                    state.current_obj.set_property_by_offset(offset, ax);
                 }
                 0x67 => {
                     // pTos B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to stack");
-                    stack.push(Register::Value(
-                        state.current_obj.get_property_by_offset(offset) as i16,
-                    ));
                     todo!("assert we didn't get a large unsigned value");
                     todo!("can a variable be an object though?");
+                    stack.push(state.current_obj.get_property_by_offset(offset));
                 }
                 0x6b => {
                     // ipToa B offset
                     let offset = state.read_u8();
                     debug!("increment property @offset {offset} to acc");
-                    todo!("increment the property - how to handle mutation");
-                    // This will probably infinite loop
-                    ax = Register::Value(state.current_obj.get_property_by_offset(offset) as i16);
                     todo!("assert we didn't get a large unsigned value");
                     todo!("can a variable be an object though?");
+                    ax = state.current_obj.get_property_by_offset(offset);
+                    state
+                        .current_obj
+                        .set_property_by_offset(offset, Register::Value(ax.to_i16() + 1));
                 }
                 0x72 => {
                     // lofsa W
@@ -721,9 +734,11 @@ impl<'a> PMachine<'a> {
                     // TODO: can we generalise what the script gives back by a type?
                     let v = (state.ip as i16 + offset) as usize;
                     ax = if let Some(obj) = script.get_object_by_offset(v) {
-                        Register::Object(self.initialise_object(obj))
+                        Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
-                        Register::String(&s.string)
+                        // todo!("String register");
+                        // Register::String(&s.string)
+                        Register::Undefined
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
                         // TODO: support 'said'
@@ -745,7 +760,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x7c => {
                     // pushSelf
-                    stack.push(Register::Object(state.current_obj));
+                    stack.push(Register::Object(state.current_obj.id));
                 }
                 // TODO: generalise this to all types 0x80..0xff
                 0x81 => {
@@ -890,7 +905,7 @@ impl<'a> PMachine<'a> {
 }
 
 // TODO: remove lifetime
-fn call_kernel_command<'a>(kernel_function: u8, params: &[Register]) -> Option<Register<'a>> {
+fn call_kernel_command(kernel_function: u8, params: &[Register]) -> Option<Register> {
     match kernel_function {
         0x00 => {
             // Load
@@ -918,7 +933,8 @@ fn call_kernel_command<'a>(kernel_function: u8, params: &[Register]) -> Option<R
         0x04 => {
             // Clone
             let obj = params[1].to_obj();
-            info!("Kernel> Clone obj: {}", obj.name);
+            todo!("This is not correct, temporary");
+            // info!("Kernel> Clone obj: {}", obj.name);
             // TODO: clone it, update info and selectors as documented
             // TODO: put the heap ptr into ax
         }
@@ -930,8 +946,9 @@ fn call_kernel_command<'a>(kernel_function: u8, params: &[Register]) -> Option<R
         0x1c => {
             // GetEvent
             let flags = params[1].to_i16();
-            let event = params[2].to_obj(); // TODO: how do we convert this into an object instance that we can mutate?
-            info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
+            let event = params[2].to_obj();
+            todo!("how do we convert this into an object instance that we can mutate?");
+            // info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
             // TODO: check the events, but for now just return null event
             return Some(Register::Value(0));
         }
