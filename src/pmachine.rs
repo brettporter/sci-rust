@@ -24,6 +24,12 @@ enum VariableType {
     Paramter,
 }
 
+enum ClassInfo {
+    Object,
+    Clone,
+    Class = 0x8000,
+}
+
 struct StackFrame {
     stackframe_start: usize,
     params_pos: usize,
@@ -221,8 +227,7 @@ impl<'a> PMachine<'a> {
         // TODO: we are going to need to deal with object's that get instantiated from a class or clone,
         // in those cases we need to adjust the key from script+offset, perhaps clone can be (script+1000,ref_count)
 
-        // todo!(): hard coding
-        let var_selectors = if obj.info == 0x8000 {
+        let var_selectors = if obj.info == ClassInfo::Class as u16 {
             // Class
             obj.variable_selectors.clone()
         } else {
@@ -750,7 +755,7 @@ impl<'a> PMachine<'a> {
                     ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
-                        // todo!("String register");
+                        todo!("String register");
                         // Register::String(&s.string)
                         Register::Undefined
                     } else {
