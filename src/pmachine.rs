@@ -220,6 +220,16 @@ impl<'a> PMachine<'a> {
         }
         // TODO: we are going to need to deal with object's that get instantiated from a class or clone,
         // in those cases we need to adjust the key from script+offset, perhaps clone can be (script+1000,ref_count)
+
+        // todo!(): hard coding
+        let var_selectors = if obj.info == 0x8000 {
+            // Class
+            obj.variable_selectors.clone()
+        } else {
+            // Object
+            self.get_inherited_var_selectors(&obj).clone()
+        };
+
         let instance = ObjectInstance {
             id: obj.id(),
             name: String::from(&obj.name),
@@ -230,7 +240,7 @@ impl<'a> PMachine<'a> {
                     .map(|&v| Register::Value(v as i16)) // TODO: check cast
                     .collect_vec(),
             ), // TODO: is clone necessary?
-            var_selectors: obj.variable_selectors.clone(), // TODO: is clone necessary?
+            var_selectors,
             func_selectors: self.get_inherited_functions(&obj),
         };
         self.object_cache.insert(obj.id(), Box::new(instance))
@@ -488,6 +498,9 @@ impl<'a> PMachine<'a> {
                     // send B
                     let obj = self.object_cache.get(&ax.to_obj()).unwrap();
 
+                    // TODO: instead of just pushing onto an execution stack and looping
+                    // it would be good to start a new context like run so we can just pop the whole thing on return
+
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2;
@@ -495,7 +508,7 @@ impl<'a> PMachine<'a> {
                     let mut read_selectors_idx = stackframe_start;
                     let mut selectors = Vec::new();
                     while read_selectors_idx < stackframe_end {
-                        // TODO: types
+                        // TODO: types to store this in
                         let (selector, np) = (
                             stack[read_selectors_idx].to_u16(),
                             stack[read_selectors_idx + 1].to_u16(),
@@ -505,6 +518,11 @@ impl<'a> PMachine<'a> {
                         read_selectors_idx += np as usize + 1;
                     }
 
+                    debug!(
+                        "Sending to selectors {:x?} for {}",
+                        selectors.iter().map(|s| s.0).collect_vec(),
+                        obj.name
+                    );
                     // TODO: super temporary to get this working
                     let mut count = 0;
                     for (selector, np, pos) in &selectors {
@@ -694,7 +712,6 @@ impl<'a> PMachine<'a> {
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to acc");
                     todo!("assert we didn't get a large unsigned value");
-                    todo!("can a variable be an object though?");
                     ax = state.current_obj.get_property_by_offset(offset);
                 }
                 0x65 => {
@@ -702,7 +719,6 @@ impl<'a> PMachine<'a> {
                     let offset = state.read_u8();
                     debug!("acc to property @offset {offset}");
                     todo!("assert we didn't get a large unsigned value");
-                    todo!("can a variable be an object though?");
                     state.current_obj.set_property_by_offset(offset, ax);
                 }
                 0x67 => {
@@ -710,7 +726,6 @@ impl<'a> PMachine<'a> {
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to stack");
                     todo!("assert we didn't get a large unsigned value");
-                    todo!("can a variable be an object though?");
                     stack.push(state.current_obj.get_property_by_offset(offset));
                 }
                 0x6b => {
@@ -718,7 +733,6 @@ impl<'a> PMachine<'a> {
                     let offset = state.read_u8();
                     debug!("increment property @offset {offset} to acc");
                     todo!("assert we didn't get a large unsigned value");
-                    todo!("can a variable be an object though?");
                     ax = state.current_obj.get_property_by_offset(offset);
                     state
                         .current_obj
@@ -869,6 +883,13 @@ impl<'a> PMachine<'a> {
         }
     }
 
+    fn get_inherited_var_selectors(&self, obj_class: &crate::script::ClassDefinition) -> &Vec<u16> {
+        let script_num = self.class_scripts[&obj_class.super_class];
+        let script = self.load_script(script_num);
+        let super_class_def = script.get_class(obj_class.super_class);
+        &super_class_def.variable_selectors
+    }
+
     fn get_inherited_functions(
         &self,
         obj_class: &crate::script::ClassDefinition,
@@ -950,6 +971,12 @@ fn call_kernel_command(kernel_function: u8, params: &[Register]) -> Option<Regis
             todo!("how do we convert this into an object instance that we can mutate?");
             // info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
             // TODO: check the events, but for now just return null event
+            return Some(Register::Value(0));
+        }
+        0x35 => {
+            // FirstNode
+            // params = DblList, return Node
+            // todo!(): currently just return 0 for empty
             return Some(Register::Value(0));
         }
         0x45 => {

@@ -47,6 +47,7 @@ pub(crate) struct ClassDefinition {
     offset: usize,
     pub species: u16,
     pub super_class: u16,
+    pub info: u16, // TODO: enum for type?
     pub name: String,
     pub variables: Vec<u16>,
     pub variable_selectors: Vec<u16>,
@@ -228,7 +229,7 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
             u16::from_le_bytes(block.block_data[offset..offset + 2].try_into().unwrap())
         })
         .collect_vec();
-    let [species, super_class, _info, name_offset] = variables[0..4] else {
+    let [species, super_class, info, name_offset] = variables[0..4] else {
         panic!("Class definition without all Obj variables: {:?}", variables);
     };
 
@@ -283,6 +284,7 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
         offset: block.block_offset + 8,
         species,
         super_class,
+        info,
         name,
         variables,
         variable_selectors,
