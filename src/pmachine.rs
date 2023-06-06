@@ -98,6 +98,7 @@ impl ObjectInstance {
     }
 }
 
+// TODO: get rid of lifetime in here
 #[derive(Copy, Clone, Debug)]
 enum Register<'a> {
     Value(i16),
@@ -410,74 +411,21 @@ impl<'a> PMachine<'a> {
                 0x43 => {
                     // callk B
                     let k_func = state.read_u8();
-                    let k_params = state.read_u8() / 2;
-                    let stackframe_start = stack.len() - (k_params as usize + 1);
-                    let num_params = stack[stackframe_start].to_i16();
+                    let k_params = state.read_u8() as usize / 2;
+                    let stackframe_start = stack.len() - (k_params + 1);
+                    let params = &stack[stackframe_start..];
+
+                    let num_params = params[0].to_i16();
                     assert_eq!(num_params, k_params as i16);
 
                     // call command, put return value into ax
-                    todo!("separate method probably");
-                    todo!("Set up a parameter slice rather than indexing into the stack");
-                    match k_func {
-                        0x00 => {
-                            // Load
-                            let res_type = stack[stackframe_start + 1].to_i16() & 0x7F;
-                            let res_num = stack[stackframe_start + 2].to_i16();
-                            info!("Kernel> Load res_type: {}, res_num: {}", res_type, res_num);
-                            // TODO: load it and put a "pointer" into ax -- how is it used?
-                        }
-                        0x02 => {
-                            // ScriptID
-                            let script_number = stack[stackframe_start + 1].to_i16();
-                            let dispatch_number = if num_params > 1 {
-                                stack[stackframe_start + 2].to_i16()
-                            } else {
-                                0
-                            };
-                            info!(
-                                "Kernel> ScriptID script_number: {}, dispatch_number: {}",
-                                script_number, dispatch_number
-                            );
-                            // TODO: load it and put a "pointer" into ax
-                            // todo!("This is not correct, temporary");
-                            ax = Register::Object(state.current_obj);
-                        }
-                        0x04 => {
-                            // Clone
-                            let obj = stack[stackframe_start + 1].to_obj();
-                            info!("Kernel> Clone obj: {}", obj.name);
-                            // TODO: clone it, update info and selectors as documented
-                            // TODO: put the heap ptr into ax
-                        }
-                        0x0b => {
-                            // Animate
-                            info!("Kernel> Animate");
-                            // TODO: get all the params, animate. No return value
-                        }
-                        0x1c => {
-                            // GetEvent
-                            let flags = stack[stackframe_start + 1].to_i16();
-                            let event = stack[stackframe_start + 2].to_obj(); // TODO: how do we convert this into an object instance that we can mutate?
-                            info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
-                            // TODO: check the events, but for now just return null event
-                            ax = Register::Value(0);
-                        }
-                        0x45 => {
-                            // Wait
-                            let ticks = stack[stackframe_start + 1].to_i16();
-                            // TODO: do wait, set return value
-                            info!("Kernel> Wait ticks: {:x}", ticks);
-                            // todo!("Temporary - currently just setting this to quit so it doesn't infinite loop");
-                            global_vars[4] = Register::Value(1);
-                            // TODO: do this for kWait
-                            // ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
-                        }
-                        _ => {
-                            debug!("Call kernel command {:x} with #params {}", k_func, k_params);
-                            // todo!("Implement missing kernel command");
-                            // TODO: temp assuming it returns a value
-                            ax = Register::Value(0);
-                        }
+                    if let Some(value) = call_kernel_command(k_func, params) {
+                        ax = value;
+                    }
+
+                    // todo!("Temporary - currently just setting this to quit so it doesn't infinite loop");
+                    if k_func == 0x45 {
+                        global_vars[4] = Register::Value(1);
                     }
 
                     // unwind stack
@@ -939,6 +887,73 @@ impl<'a> PMachine<'a> {
 
         self.script_cache.insert(number, Box::new(script))
     }
+}
+
+// TODO: remove lifetime
+fn call_kernel_command<'a>(kernel_function: u8, params: &[Register]) -> Option<Register<'a>> {
+    match kernel_function {
+        0x00 => {
+            // Load
+            let res_type = params[1].to_i16() & 0x7F;
+            let res_num = params[2].to_i16();
+            info!("Kernel> Load res_type: {}, res_num: {}", res_type, res_num);
+            // TODO: load it and put a "pointer" into ax -- how is it used?
+        }
+        0x02 => {
+            // ScriptID
+            let script_number = params[1].to_i16();
+            let dispatch_number = if params.len() - 1 > 1 {
+                params[2].to_i16()
+            } else {
+                0
+            };
+            info!(
+                "Kernel> ScriptID script_number: {}, dispatch_number: {}",
+                script_number, dispatch_number
+            );
+            // TODO: load it and put a "pointer" into ax
+            todo!("This is not correct, temporary");
+            return Some(Register::Undefined);
+        }
+        0x04 => {
+            // Clone
+            let obj = params[1].to_obj();
+            info!("Kernel> Clone obj: {}", obj.name);
+            // TODO: clone it, update info and selectors as documented
+            // TODO: put the heap ptr into ax
+        }
+        0x0b => {
+            // Animate
+            info!("Kernel> Animate");
+            // TODO: get all the params, animate. No return value
+        }
+        0x1c => {
+            // GetEvent
+            let flags = params[1].to_i16();
+            let event = params[2].to_obj(); // TODO: how do we convert this into an object instance that we can mutate?
+            info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
+            // TODO: check the events, but for now just return null event
+            return Some(Register::Value(0));
+        }
+        0x45 => {
+            // Wait
+            let ticks = params[1].to_i16();
+            // TODO: do wait, set return value
+            info!("Kernel> Wait ticks: {:x}", ticks);
+            // TODO: do this for kWait
+            // ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        }
+        _ => {
+            debug!(
+                "Call kernel command {:x} with #params {:?}",
+                kernel_function, params
+            );
+            // todo!("Implement missing kernel command");
+            // TODO: temp assuming it returns a value
+            return Some(Register::Value(0));
+        }
+    }
+    return None;
 }
 
 fn load_vocab_selector_names(resource: &Resource) -> HashMap<u16, &str> {
