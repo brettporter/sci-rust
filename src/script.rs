@@ -31,7 +31,7 @@ pub(crate) struct Script<'a> {
     classes: Vec<ClassDefinition>,
     objects: Vec<ClassDefinition>,
     strings: Vec<StringDefinition>,
-    main_object_name: Option<&'a str>,
+    main_object_offset: Option<usize>,
     pub data: &'a [u8],
 }
 
@@ -52,6 +52,14 @@ pub(crate) struct ClassDefinition {
     pub variable_selectors: Vec<u16>,
     // TODO: better definition than this
     pub function_selectors: Vec<(u16, u16)>,
+}
+impl ClassDefinition {
+    // TODO: set on construction
+    pub(crate) fn id(&self) -> usize {
+        // TODO: what about clones?
+        assert!(self.offset < u16::MAX as usize);
+        usize::from(self.script_number) << 16 | self.offset
+    }
 }
 
 pub(crate) struct StringDefinition {
@@ -164,18 +172,8 @@ impl<'a> Script<'a> {
 
         // exports[0] is a reference an object
         // TODO: should this be done for other scripts as well? Script 997 has 0xfffe in it but others are correct
-        let main_object_name = if resource.resource_number == 0 {
-            let main_offset = exports[0] as usize;
-            let name_offset =
-                u16::from_le_bytes(data[main_offset + 6..main_offset + 8].try_into().unwrap())
-                    as usize;
-            // TODO: can we get this from string instead?
-            Some(
-                CStr::from_bytes_until_nul(&data[name_offset..])
-                    .unwrap()
-                    .to_str()
-                    .unwrap(),
-            )
+        let main_object_offset = if resource.resource_number == 0 {
+            Some(exports[0] as usize)
         } else {
             None
         };
@@ -187,21 +185,21 @@ impl<'a> Script<'a> {
             objects,
             variables,
             strings,
-            main_object_name,
+            main_object_offset,
             data,
         }
     }
 
     pub(crate) fn get_main_object(&self) -> &ClassDefinition {
-        self.get_object(self.main_object_name.unwrap())
+        self.get_object(self.main_object_offset.unwrap())
     }
 
     pub(crate) fn get_class(&self, species: u16) -> &ClassDefinition {
         self.classes.iter().find(|&c| c.species == species).unwrap()
     }
 
-    pub(crate) fn get_object(&self, name: &str) -> &ClassDefinition {
-        self.objects.iter().find(|&o| o.name == name).unwrap()
+    pub(crate) fn get_object(&self, offset: usize) -> &ClassDefinition {
+        self.objects.iter().find(|&o| o.offset == offset).unwrap()
     }
 
     pub(crate) fn get_string_by_offset(&self, offset: usize) -> Option<&StringDefinition> {

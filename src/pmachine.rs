@@ -14,8 +14,7 @@ pub(crate) struct PMachine<'a> {
     class_scripts: HashMap<u16, u16>,
     play_selector: u16,
     script_cache: FrozenMap<u16, Box<Script<'a>>>,
-    object_cache: FrozenMap<String, Box<ObjectInstance>>,
-    class_cache: FrozenMap<u16, Box<ObjectInstance>>,
+    object_cache: FrozenMap<usize, Box<ObjectInstance>>,
 }
 
 enum VariableType {
@@ -77,6 +76,7 @@ impl MachineState<'_> {
 
 #[derive(Debug)]
 struct ObjectInstance {
+    id: usize,
     name: String,
     species: u16,
     variables: Vec<u16>,
@@ -181,7 +181,6 @@ impl<'a> PMachine<'a> {
             play_selector,
             script_cache: FrozenMap::new(),
             object_cache: FrozenMap::new(),
-            class_cache: FrozenMap::new(),
         }
     }
 
@@ -193,31 +192,20 @@ impl<'a> PMachine<'a> {
     }
 
     fn initialise_object(&self, obj: &crate::script::ClassDefinition) -> &ObjectInstance {
-        // TODO: we are going to need to deal with object's that get instantiated from a class or clone, so will not be uniquely identified by name in the cache. Put a handle in the register for these.
-        todo!("return from cache or determine if this is creating a new one");
+        if let Some(o) = self.object_cache.get(&obj.id()) {
+            return o;
+        }
+        // TODO: we are going to need to deal with object's that get instantiated from a class or clone,
+        // in those cases we need to adjust the key from script+offset, perhaps clone can be (script+1000,ref_count)
         let instance = ObjectInstance {
+            id: obj.id(),
             name: String::from(&obj.name),
             species: obj.species,
             variables: obj.variables.clone(), // TODO: is clone necessary?
             var_selectors: obj.variable_selectors.clone(), // TODO: is clone necessary?
             func_selectors: self.get_inherited_functions(&obj),
         };
-        self.object_cache
-            .insert(String::from(&obj.name), Box::new(instance))
-    }
-
-    fn initialise_class(&self, class: &crate::script::ClassDefinition) -> &ObjectInstance {
-        todo!("return from cache");
-        todo!("Need to work out classes vs objects here");
-        // TODO: should it be an object instance?
-        let instance = ObjectInstance {
-            name: String::from(&class.name),
-            species: class.species,
-            variables: class.variables.clone(), // TODO: is clone necessary?
-            var_selectors: class.variable_selectors.clone(), // TODO: is clone necessary?
-            func_selectors: self.get_inherited_functions(&class),
-        };
-        self.class_cache.insert(class.species, Box::new(instance))
+        self.object_cache.insert(obj.id(), Box::new(instance))
     }
 
     pub(crate) fn run_game_play_method(&self) {
@@ -532,10 +520,8 @@ impl<'a> PMachine<'a> {
                     // send B
                     todo!("This will need to change when objects are on the heap and not a single cache");
                     // TODO: bit awkward, to appease the borrow checker of what is stored in ax
-                    let obj = if let Some(o) = self.object_cache.get(&ax.to_obj().name) {
+                    let obj = if let Some(o) = self.object_cache.get(&ax.to_obj().id) {
                         o
-                    } else if let Some(c) = self.class_cache.get(&ax.to_obj().species) {
-                        c
                     } else {
                         todo!(
                             "Didn't find ax object {} in objects or classes",
@@ -626,7 +612,8 @@ impl<'a> PMachine<'a> {
 
                     let class = s.get_class(num);
                     debug!("class {} {}", class.script_number, num);
-                    let instance = self.initialise_class(class);
+                    todo!("not sure if we are creating an object from this class, or need a different register type for the class");
+                    let instance = self.initialise_object(class);
                     ax = Register::Object(instance);
                 }
                 0x54 | 0x55 => {
@@ -684,7 +671,8 @@ impl<'a> PMachine<'a> {
                     };
 
                     let class = s.get_class(class_num);
-                    let obj = self.initialise_class(class);
+                    todo!("not sure if we are creating an object from this class, or retaining the original object to call this class");
+                    let obj = self.initialise_object(class);
 
                     todo!("re-use copy-pasta from send");
                     let stackframe_size = state.read_u8() as usize;
