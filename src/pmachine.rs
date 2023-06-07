@@ -133,10 +133,10 @@ impl ObjectInstance {
 enum Register {
     Value(i16),
     Object(usize),
-    // String(usize),
+    Variable(VariableType, i16),
+    String(usize),
     // TODO: include heap pointers?
     Undefined,
-    Variable(VariableType, i16),
 }
 impl Register {
     fn to_i16(&self) -> i16 {
@@ -669,9 +669,7 @@ impl<'a> PMachine<'a> {
                     ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
-                        todo!("String register");
-                        // Register::String(&s.string)
-                        Register::Undefined
+                        Register::String(s.offset)
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
                         // TODO: support 'said'

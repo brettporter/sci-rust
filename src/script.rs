@@ -64,7 +64,7 @@ impl ClassDefinition {
 }
 
 pub(crate) struct StringDefinition {
-    offset: usize,
+    pub offset: usize,
     pub string: String,
 }
 
