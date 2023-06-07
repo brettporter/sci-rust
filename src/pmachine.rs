@@ -40,6 +40,7 @@ struct StackFrame {
     script_number: u16,
     ip: usize,
     obj: usize,
+    remaining_selectors: Vec<usize>,
 }
 
 struct MachineState<'a> {
@@ -444,6 +445,7 @@ impl<'a> PMachine<'a> {
                         script_number: script.number,
                         ip: state.ip,
                         obj: state.current_obj.id,
+                        remaining_selectors: Vec::new(),
                     });
 
                     // As opposed to send, does not start with selector
@@ -489,6 +491,10 @@ impl<'a> PMachine<'a> {
                         "Return from function -> {}@{:x}",
                         frame.script_number, frame.ip
                     );
+
+                    // TODO: implement follow on
+                    assert!(frame.remaining_selectors.is_empty());
+
                     let current_script = script.number;
                     if frame.script_number != current_script {
                         script = &mut self.load_script(frame.script_number);
@@ -524,47 +530,42 @@ impl<'a> PMachine<'a> {
                     let stackframe_end = stack.len();
                     let stackframe_start = stackframe_end - stackframe_size / 2;
 
-                    let mut read_selectors_idx = stackframe_start;
-                    let mut selectors = Vec::new();
-                    while read_selectors_idx < stackframe_end {
-                        // TODO: types to store this in
-                        let (selector, np) = (
-                            stack[read_selectors_idx].to_u16(),
-                            stack[read_selectors_idx + 1].to_u16(),
-                        );
-                        read_selectors_idx += 1;
-                        selectors.push((selector, np, read_selectors_idx));
-                        read_selectors_idx += np as usize + 1;
+                    let mut read_selectors_idx = 0;
+                    let mut selector_offsets = Vec::new();
+                    while read_selectors_idx < stackframe_end - stackframe_start {
+                        let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
+                        selector_offsets.push(read_selectors_idx);
+                        read_selectors_idx += np as usize + 2;
                     }
 
                     debug!(
-                        "Sending to selectors {:x?} for {}",
-                        selectors.iter().map(|s| s.0).collect_vec(),
+                        "Sending to {} selectors for {}",
+                        selector_offsets.len(),
                         obj.name
                     );
-                    // TODO: super temporary to get this working
-                    let mut count = 0;
-                    for (selector, np, pos) in &selectors {
-                        count += 1;
-                        if obj.has_var_selector(*selector) {
+                    while !selector_offsets.is_empty() {
+                        let pos = selector_offsets.pop().unwrap();
+                        let selector = stack[stackframe_start + pos].to_u16();
+                        let np = stack[stackframe_start + pos + 1].to_u16();
+                        debug!("Sending to selectors {:x} for {}", selector, obj.name);
+
+                        if obj.has_var_selector(selector) {
                             // Variable
-                            if *np == 0 {
+                            if np == 0 {
                                 // get
-                                ax = obj.get_property(*selector);
+                                ax = obj.get_property(selector);
                                 todo!();
                             } else {
-                                obj.set_property(*selector, ax);
+                                obj.set_property(selector, ax);
                             }
-                            if count == selectors.len() {
+                            if selector_offsets.is_empty() {
                                 // Unwind stack as ret will not be called
                                 stack.truncate(stackframe_start);
                             }
                         } else {
                             // Function
-                            // todo!("assert last one, we don't have a way to recursively send for functions yet");
-                            assert_eq!(count, selectors.len());
 
-                            let (script_number, code_offset) = obj.get_func_selector(*selector);
+                            let (script_number, code_offset) = obj.get_func_selector(selector);
                             debug!(
                                 "Call send on function {selector} -> {script_number} @{:x} for {}",
                                 code_offset, obj.name
@@ -582,6 +583,7 @@ impl<'a> PMachine<'a> {
                                 script_number: current_script,
                                 ip: state.ip,
                                 obj: state.current_obj.id,
+                                remaining_selectors: selector_offsets,
                             });
 
                             if script_number != current_script {
@@ -591,10 +593,10 @@ impl<'a> PMachine<'a> {
                             state.ip = code_offset as usize;
                             state.current_obj = obj;
 
-                            // todo!(): what if there are more to do?
-                            params_pos = *pos;
+                            params_pos = pos;
                             temp_pos = stackframe_end;
-                            num_params = *np;
+                            num_params = np;
+                            break;
                         }
                     }
                 }
