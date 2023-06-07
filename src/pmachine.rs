@@ -451,6 +451,7 @@ impl<'a> PMachine<'a> {
                     // As opposed to send, does not start with selector
                     num_params = stack[stackframe_start].to_u16();
                     todo!("maybe replace < num_params with being < temp_pos below, though still an opportunity to make a better frame with params/temp separate");
+                    // TODO: Ideally we would just have a set of parameters to select from and can ignore if exceeding the length
 
                     state.jump(rel_pos);
                     params_pos = stackframe_start; // argc is included
@@ -714,8 +715,9 @@ impl<'a> PMachine<'a> {
                     debug!("load parameter {} to acc", var);
 
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    assert!(var <= num_params);
-                    ax = stack[params_pos + var as usize];
+                    if var <= num_params {
+                        ax = stack[params_pos + var as usize];
+                    }
                 }
                 0x89 => {
                     // lsg B
@@ -734,16 +736,18 @@ impl<'a> PMachine<'a> {
                     let var = state.read_u8() as u16;
                     debug!("load parameter {} to stack", var);
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    assert!(var <= num_params);
-                    stack.push(stack[params_pos + var as usize]);
+                    if var <= num_params {
+                        stack.push(stack[params_pos + var as usize]);
+                    }
                 }
                 0x97 => {
                     // lapi B
                     let var = state.read_u8() as u16 + ax.to_u16();
                     debug!("load parameter {} to acc", var);
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    assert!(var <= num_params);
-                    ax = stack[params_pos + var as usize];
+                    if var <= num_params {
+                        ax = stack[params_pos + var as usize];
+                    }
                 }
                 0x98 => {
                     // lsgi W
