@@ -621,28 +621,24 @@ impl<'a> PMachine<'a> {
                     // pToa B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to acc");
-                    todo!("assert we didn't get a large unsigned value");
                     ax = state.current_obj.get_property_by_offset(offset);
                 }
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
                     debug!("acc to property @offset {offset}");
-                    todo!("assert we didn't get a large unsigned value");
                     state.current_obj.set_property_by_offset(offset, ax);
                 }
                 0x67 => {
                     // pTos B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to stack");
-                    todo!("assert we didn't get a large unsigned value");
                     stack.push(state.current_obj.get_property_by_offset(offset));
                 }
                 0x6b => {
                     // ipToa B offset
                     let offset = state.read_u8();
                     debug!("increment property @offset {offset} to acc");
-                    todo!("assert we didn't get a large unsigned value");
                     ax = state.current_obj.get_property_by_offset(offset);
                     state
                         .current_obj
