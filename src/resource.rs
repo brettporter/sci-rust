@@ -40,7 +40,7 @@ pub(crate) struct Resource {
     // TODO: better way to handle this? For now just raw uncompressed data
     //  While picture just runs its processing from this perhaps we should have specialised resource structs
     //  And/or add the read_u16 type methods to this struct
-    pub resource_data: Vec<u8>,
+    pub resource_data: Box<Vec<u8>>,
 }
 
 fn parse_resource_id(value: u16) -> (ResourceType, u16) {
@@ -132,14 +132,14 @@ pub(crate) fn load_all_resources(game_path: &Path) -> Result<HashMap<u16, Resour
             let compressed_data = &buffer[offset + 8..offset + 4 + comp_size];
 
             // TODO: refactor into the decompress module and let it handle different SCI versions
-            let resource_data = match FromPrimitive::from_u16(method).unwrap() {
+            let resource_data = Box::new(match FromPrimitive::from_u16(method).unwrap() {
                 CompressionType::None => compressed_data.to_vec(),
                 CompressionType::LZW => {
                     let mut decoder = Decoder::new(BitOrder::Lsb, 8);
                     decoder.decode(&compressed_data).unwrap() // TODO: error handling
                 }
                 CompressionType::Huffman => decompress::huffman_decode(&compressed_data),
-            };
+            });
 
             assert_eq!(resource_data.len(), decomp_size);
 
@@ -167,7 +167,7 @@ pub(crate) fn get_resource<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{borrow::Borrow, path::PathBuf};
 
     use super::*;
 
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(resource.resource_number, 409);
         assert_eq!(resource.resource_type, ResourceType::Text);
         assert_eq!(
-            resource.resource_data,
+            resource.resource_data.to_vec(),
             "\nHave you previously attended a performance of\n\"The Colonel's Bequest?\"\n\n\0"
                 .as_bytes()
         );

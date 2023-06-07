@@ -22,7 +22,7 @@ enum ScriptBlockType {
     LocalVariables,
 }
 
-pub(crate) struct Script<'a> {
+pub(crate) struct Script {
     // TODO: add storage for other block types
     // TODO: change all the "number" to id
     pub number: u16,
@@ -32,7 +32,7 @@ pub(crate) struct Script<'a> {
     objects: Vec<ClassDefinition>,
     strings: Vec<StringDefinition>,
     main_object_offset: Option<usize>,
-    pub data: &'a [u8],
+    pub data: Box<Vec<u8>>,
 }
 
 struct ScriptBlock<'a> {
@@ -68,12 +68,13 @@ pub(crate) struct StringDefinition {
     pub string: String,
 }
 
-impl<'a> Script<'a> {
-    pub(crate) fn load(resource: &'a Resource) -> Self {
+impl Script {
+    pub(crate) fn load(resource: &Resource) -> Self {
         debug!("Loading script #{}", resource.resource_number);
 
         let mut idx = 0;
-        let data = resource.resource_data.as_slice();
+        // TODO: is clone here avoidable?
+        let data = resource.resource_data.clone();
 
         let mut blocks: Vec<ScriptBlock> = Vec::new();
 
