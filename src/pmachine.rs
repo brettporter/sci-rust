@@ -298,6 +298,7 @@ impl<'a> PMachine<'a> {
         let mut global_vars: Vec<Register> = self
             .load_script(SCRIPT_MAIN)
             .variables
+            .borrow()
             .iter()
             .map(|&v| {
                 // TODO: remove this assertion when we are confident an i16 can be used
@@ -490,7 +491,7 @@ impl<'a> PMachine<'a> {
                     );
                     let current_script = script.number;
                     if frame.script_number != current_script {
-                        script = self.load_script(frame.script_number);
+                        script = &mut self.load_script(frame.script_number);
                         state.code = script.data;
                     };
                     state.ip = frame.ip;
@@ -766,7 +767,7 @@ impl<'a> PMachine<'a> {
                     // sal B
                     let var = state.read_u8();
                     debug!("store accumulator to local {}", var);
-                    todo!("store local var");
+                    script.variables.borrow_mut()[var as usize] = ax.to_u16();
                 }
                 0xa5 => {
                     // sat B

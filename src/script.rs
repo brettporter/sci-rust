@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{cell::RefCell, ffi::CStr};
 
 use itertools::Itertools;
 use log::debug;
@@ -27,7 +27,7 @@ pub(crate) struct Script<'a> {
     // TODO: change all the "number" to id
     pub number: u16,
     exports: Vec<u16>,
-    pub variables: Vec<u16>,
+    pub variables: RefCell<Vec<u16>>, // TODO: if we can't live with u16 then we might need to copy it into the loop
     classes: Vec<ClassDefinition>,
     objects: Vec<ClassDefinition>,
     strings: Vec<StringDefinition>,
@@ -110,7 +110,7 @@ impl<'a> Script<'a> {
 
         let mut classes = Vec::new();
         let mut objects = Vec::new();
-        let mut variables = Vec::new();
+        let mut variables = RefCell::new(Vec::new());
         let mut strings = Vec::new();
         for block in blocks {
             // TODO: for rest - match on block type and store the data, e.g. exports. Parse it if possible.
@@ -161,11 +161,15 @@ impl<'a> Script<'a> {
                     assert!(block.block_data.is_empty());
                 }
                 ScriptBlockType::LocalVariables => {
-                    variables = (0..block.block_data.len())
-                        .step_by(2)
-                        .map(|i| u16::from_le_bytes(block.block_data[i..i + 2].try_into().unwrap()))
-                        .collect_vec();
-                    debug!("Local variables {}", variables.len());
+                    variables = RefCell::new(
+                        (0..block.block_data.len())
+                            .step_by(2)
+                            .map(|i| {
+                                u16::from_le_bytes(block.block_data[i..i + 2].try_into().unwrap())
+                            })
+                            .collect_vec(),
+                    );
+                    debug!("Local variables");
                 }
                 _ => {}
             }
