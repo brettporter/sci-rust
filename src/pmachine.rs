@@ -3,6 +3,7 @@ use std::{cell::RefCell, collections::HashMap};
 use elsa::FrozenMap;
 use itertools::Itertools;
 use log::{debug, info};
+use num_traits::FromPrimitive;
 
 use crate::{
     resource::{self, Resource, ResourceType},
@@ -17,6 +18,7 @@ pub(crate) struct PMachine<'a> {
     object_cache: FrozenMap<usize, Box<ObjectInstance>>,
 }
 
+#[derive(FromPrimitive, Copy, Clone, Debug)]
 enum VariableType {
     Global,
     Local,
@@ -134,6 +136,7 @@ enum Register {
     // String(usize),
     // TODO: include heap pointers?
     Undefined,
+    Variable(VariableType, i16),
 }
 impl Register {
     fn to_i16(&self) -> i16 {
@@ -605,13 +608,22 @@ impl<'a> PMachine<'a> {
                 0x5b => {
                     // lea B type, B index
                     let var_type = state.read_i8();
-                    let var_index = state.read_u8();
+                    let mut var_index = state.read_u8() as i16;
 
+                    // TODO: use bitflags
                     let use_acc = (var_type & 0b10000) != 0;
-                    let var_type_num = var_type & 0b110 >> 1; // TODO: convert to VariableType and then match
+                    let var_type_num = var_type & 0b110 >> 1;
 
-                    todo!("Load effective address {var_type_num} {use_acc} {var_index}");
-                    // TODO: ax = &(vars[var_type_num][use_acc ? vi+acc : vi])
+                    if use_acc {
+                        var_index += ax.to_i16();
+                        assert!(var_index >= 0);
+                    }
+
+                    let variable_type: VariableType =
+                        FromPrimitive::from_u16(var_type_num as u16).unwrap();
+
+                    // TODO: confirm that this is correct - get the variable "address", not the value
+                    ax = Register::Variable(variable_type, var_index);
                 }
                 0x5c | 0x5d => {
                     // selfID
