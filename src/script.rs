@@ -215,6 +215,10 @@ impl Script {
     pub(crate) fn get_object_by_offset(&self, offset: usize) -> Option<&ClassDefinition> {
         self.objects.iter().find(|&o| o.offset == offset)
     }
+
+    pub(crate) fn get_dispatch_address(&self, dispatch_number: i16) -> u16 {
+        self.exports[dispatch_number as usize]
+    }
 }
 
 fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefinition {
