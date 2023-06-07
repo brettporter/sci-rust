@@ -335,6 +335,10 @@ impl<'a> PMachine<'a> {
                     // and
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() & state.ax.to_i16());
                 }
+                0x14 | 0x15 => {
+                    // or
+                    state.ax = Register::Value(stack.pop().unwrap().to_i16() | state.ax.to_i16());
+                }
                 0x18 | 0x19 => {
                     // not
                     state.ax = Register::Value(if state.ax.to_i16() == 0 { 1 } else { 0 });
@@ -525,7 +529,7 @@ impl<'a> PMachine<'a> {
                             selector,
                             np,
                             frame.stackframe_start,
-                            stack.len(),
+                            frame.temp_pos,
                             pos,
                             remaining_selectors.clone(), // TODO: is clone needed
                         ) {
@@ -867,7 +871,7 @@ impl<'a> PMachine<'a> {
         pos: usize,
         selector_offsets: Vec<usize>,
     ) -> Option<StackFrame> {
-        debug!("Sending to selector {:x} for {}", selector, obj.name);
+        debug!("Sending to selector {:x} for {}", selector, obj.name); // TODO: params
 
         if obj.has_var_selector(selector) {
             // Variable
@@ -883,9 +887,9 @@ impl<'a> PMachine<'a> {
 
             let (script_number, code_offset) = obj.get_func_selector(selector);
             debug!(
-                "Call send on function {selector} -> {script_number} @{:x} for {}",
-                code_offset, obj.name
-            ); // TODO: show parameters?
+                "Call send on function {selector} -> {script_number} @{:x} for {} #p: {}",
+                code_offset, obj.name, num_params
+            );
 
             let frame = StackFrame {
                 // Unwind position
@@ -904,7 +908,7 @@ impl<'a> PMachine<'a> {
             state.code = script.data.clone();
             state.ip = code_offset as usize;
 
-            state.params_pos = pos;
+            state.params_pos = stackframe_start + pos + 1;
             state.temp_pos = stackframe_end;
             state.num_params = num_params;
             state.script = script_number;
