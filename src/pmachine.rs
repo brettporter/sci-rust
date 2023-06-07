@@ -494,6 +494,40 @@ impl<'a> PMachine<'a> {
                     // TODO: do we need to do something with rest?
                     stack.truncate(stackframe_start);
                 }
+                0x45 => {
+                    // callb B dispindex, B framesize
+                    let dispatch_index = state.read_u8() as i16;
+
+                    let stackframe_size = state.read_u8() as usize;
+                    let stackframe_end = stack.len();
+                    let stackframe_start = stackframe_end - stackframe_size / 2 - 1;
+
+                    call_stack.push(StackFrame {
+                        // Unwind position
+                        stackframe_start,
+                        // Saving these to return to
+                        params_pos: state.params_pos,
+                        temp_pos: state.temp_pos,
+                        num_params: state.num_params,
+                        script_number: state.script,
+                        ip: state.ip,
+                        obj: state.current_obj.id,
+                        remaining_selectors: Vec::new(),
+                    });
+
+                    // As opposed to send, does not start with selector
+                    state.num_params = stack[stackframe_start].to_u16();
+
+                    // Switch to base script
+                    // todo!("this combination should be done in state to ensure it's always done together");
+                    state.script = SCRIPT_MAIN;
+                    let script = self.load_script(state.script);
+                    state.code = script.data.clone(); // TODO: remove clone
+                    state.ip = script.get_dispatch_address(dispatch_index) as usize;
+
+                    state.params_pos = stackframe_start; // argc is included
+                    state.temp_pos = stackframe_end;
+                }
                 0x48 | 0x49 => {
                     // ret
                     if call_stack.is_empty() {
