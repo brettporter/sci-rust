@@ -499,9 +499,19 @@ impl<'a> PMachine<'a> {
                     temp_pos = frame.temp_pos;
                     num_params = frame.num_params;
                 }
-                0x4a | 0x4b => {
-                    // send B
-                    let obj = self.object_cache.get(&ax.to_obj()).unwrap();
+                0x4a | 0x4b | 0x54 | 0x55 | 0x57 => {
+                    // TODO: factor out a method and make this separate again. Curently hard with local variables in here.
+                    let obj = if cmd == 0x54 || cmd == 0x55 {
+                        // self B selector
+                        state.current_obj
+                    } else if cmd == 0x57 {
+                        // super B class B stackframe
+                        let class_num = state.read_u8() as u16;
+                        self.initialise_object_from_class(class_num)
+                    } else {
+                        // send B
+                        self.object_cache.get(&ax.to_obj()).unwrap()
+                    };
 
                     // TODO: instead of just pushing onto an execution stack and looping
                     // it would be good to start a new context like run so we can just pop the whole thing on return
@@ -547,12 +557,12 @@ impl<'a> PMachine<'a> {
                             }
                         } else {
                             // Function
-                            todo!("assert last one, we don't have a way to recursively send for functions yet");
+                            // todo!("assert last one, we don't have a way to recursively send for functions yet");
                             assert_eq!(count, selectors.len());
 
                             let (script_number, code_offset) = obj.get_func_selector(*selector);
                             debug!(
-                                "Call send on function {selector} -> {script_number} @{:x} {}",
+                                "Call send on function {selector} -> {script_number} @{:x} for {}",
                                 code_offset, obj.name
                             ); // TODO: show parameters?
 
@@ -576,6 +586,8 @@ impl<'a> PMachine<'a> {
                             };
                             state.ip = code_offset as usize;
                             state.current_obj = obj;
+
+                            // todo!(): what if there are more to do?
                             params_pos = *pos;
                             temp_pos = stackframe_end;
                             num_params = *np;
@@ -584,118 +596,11 @@ impl<'a> PMachine<'a> {
                 }
                 0x51 => {
                     // class B
-                    let num = state.read_u8() as u16;
-
-                    let script_number = self.class_scripts[&num];
-                    let s = if script_number != script.number {
-                        self.load_script(script_number)
-                    } else {
-                        script
-                    };
-
-                    let class = s.get_class(num);
-                    debug!("class {} {}", class.script_number, num);
-                    let instance = self.initialise_object(class);
-                    ax = Register::Object(instance.id);
-                }
-                0x54 | 0x55 => {
-                    // self B selector
-                    let obj = state.current_obj;
-
-                    todo!("reuse copy-pasta from send");
-                    let stackframe_size = state.read_u8() as usize;
-                    let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - stackframe_size / 2;
-                    let stackframe = &stack[stackframe_start..];
-                    let selector = stackframe[0].to_u16();
-                    let np = stackframe[1].to_u16();
-                    // TODO: this will fail if multiple selectors
-                    assert_eq!(stackframe_end, stackframe_start + 2 + np as usize);
-
-                    // TODO: handle variables as well
-                    let (script_number, code_offset) = obj.get_func_selector(selector);
-                    debug!("Call self {selector} -> {script_number} @{:x}", code_offset); // TODO: show parameters?
-
-                    let current_script = script.number;
-
-                    call_stack.push(StackFrame {
-                        // Unwind position
-                        stackframe_start,
-                        // Saved to return to
-                        params_pos,
-                        temp_pos,
-                        num_params,
-                        script_number: current_script,
-                        ip: state.ip,
-                        obj: state.current_obj.id,
-                    });
-
-                    if script_number != current_script {
-                        script = self.load_script(script_number);
-                        state.code = script.data;
-                    };
-                    state.ip = code_offset as usize;
-                    // TODO: do we need to change current_obj in self? What about if it is in superClass?
-                    params_pos = stackframe_start + 1; // skip the selector
-                    temp_pos = stackframe_end;
-                    num_params = np;
-                }
-                0x57 => {
-                    // super B class B stackframe
                     let class_num = state.read_u8() as u16;
+                    let obj = self.initialise_object_from_class(class_num);
 
-                    todo!("re-use copy-pasta from class");
-                    let script_number = self.class_scripts[&class_num];
-                    let s = if script_number != script.number {
-                        self.load_script(script_number)
-                    } else {
-                        script
-                    };
-
-                    let class = s.get_class(class_num);
-                    todo!("not sure if we are creating an object from this class, or retaining the original object to call this class");
-                    let obj = self.initialise_object(class);
-
-                    todo!("re-use copy-pasta from send");
-                    let stackframe_size = state.read_u8() as usize;
-                    let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - stackframe_size / 2;
-                    let stackframe = &stack[stackframe_start..];
-                    let selector = stackframe[0].to_u16();
-                    let np = stackframe[1].to_u16();
-                    // TODO: this will fail if multiple selectors
-                    assert_eq!(stackframe_end, stackframe_start + 2 + np as usize);
-
-                    // Note there's an assumption that variables are not sent for here since it is a class not an object
-                    let (script_number, code_offset) = obj.get_func_selector(selector);
-                    debug!(
-                        "Call super {class_num} {selector} -> {script_number} @{:x}",
-                        code_offset
-                    ); // TODO: show parameters?
-
-                    let current_script = script.number;
-
-                    call_stack.push(StackFrame {
-                        // Unwind position
-                        stackframe_start,
-                        // Save these to return to
-                        params_pos,
-                        temp_pos,
-                        num_params,
-                        script_number: current_script,
-                        ip: state.ip,
-                        obj: state.current_obj.id,
-                    });
-
-                    if script_number != current_script {
-                        script = self.load_script(script_number);
-                        state.code = script.data;
-                    };
-                    state.ip = code_offset as usize;
-                    state.current_obj = obj;
-                    params_pos = stackframe_start + 1; // skip the selector
-                    temp_pos = stackframe_end;
-                    num_params = np;
+                    // TODO: do we need to change script?
+                    ax = Register::Object(obj.id);
                 }
                 0x5b => {
                     // lea B type, B index
@@ -927,6 +832,13 @@ impl<'a> PMachine<'a> {
         );
 
         self.script_cache.insert(number, Box::new(script))
+    }
+
+    fn initialise_object_from_class(&self, class_num: u16) -> &ObjectInstance {
+        let script_number = self.class_scripts[&class_num];
+        let script = self.load_script(script_number);
+        let class = script.get_class(class_num);
+        self.initialise_object(class)
     }
 }
 
