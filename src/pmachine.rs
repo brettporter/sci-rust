@@ -27,20 +27,22 @@ enum VariableType {
     Paramter,
 }
 
-enum ClassInfo {
-    Object,
-    Clone,
-    Class = 0x8000,
-}
-
 struct StackFrame {
-    stackframe_start: usize,
+    // Unwind position
+    unwind_pos: usize,
+
+    // Restore values of the parent caller
     params_pos: usize,
-    temp_pos: usize,
     num_params: u16,
+    temp_pos: usize,
+    stack_len: usize,
+
+    // Code point to return to
     script_number: u16,
     ip: usize,
     obj: usize,
+
+    // Any selectors not yet called in the last send
     remaining_selectors: Vec<usize>,
 }
 
@@ -92,6 +94,15 @@ impl MachineState<'_> {
     }
 }
 
+// TODO: should probably be bitflags instead in the script reader, and then just defining the type of object/clone/class in here as needed
+#[derive(Debug, FromPrimitive)]
+enum ObjectType {
+    Object,
+    Clone = 1,
+    Unknown_4 = 4, // TODO: not sure what this represents yeet
+    Class = 0x8000,
+}
+
 // Counter for clones. Starting value ensures no overlap with existing IDs
 const CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
 
@@ -100,6 +111,7 @@ struct ObjectInstance {
     id: usize,
     name: String,
     species: u16,
+    object_type: ObjectType,
     variables: RefCell<Vec<Register>>,
     var_selectors: Vec<u16>,
     func_selectors: HashMap<u16, (u16, u16)>,
@@ -142,18 +154,19 @@ impl ObjectInstance {
 
     fn kernel_clone(&self) -> Box<ObjectInstance> {
         // Currently using a global counter for all clones
-        // alternative: <clone num (6)>:<script num (10)>:<offset (16)>
         let id = CLONE_COUNTER.inc();
+        // TODO: spec says selectors should be empty - but it might just mean in the memory space and can still look up the inherited ones,
+        // or perhaps it calls on a different object with a current object pointer to the clone. May be ok to clone function selectors here
+        // (and may need to do variables too), but re-evaluate if problems.
         let instance = ObjectInstance {
             id,
             name: self.name.clone(), // TODO: modify?
+            object_type: ObjectType::Clone,
             species: self.species,
             variables: self.variables.clone(),
             var_selectors: Vec::new(),
-            func_selectors: HashMap::new(),
+            func_selectors: self.func_selectors.clone(),
         };
-        // TODO: do we copy variable selectors in one case?
-        // TODO: what about -info- modification to set to 1?
         Box::new(instance)
     }
 }
@@ -172,14 +185,14 @@ impl Register {
     fn to_i16(&self) -> i16 {
         match *self {
             Register::Value(v) => v,
-            _ => panic!("Register was not a value"),
+            _ => panic!("Register was not a value {:?}", self),
         }
     }
 
     fn to_obj(&self) -> usize {
         match *self {
             Register::Object(v) => v,
-            _ => panic!("Register was not an object"),
+            _ => panic!("Register was not an object {:?}", self),
         }
     }
 
@@ -268,7 +281,7 @@ impl<'a> PMachine<'a> {
         // TODO: we are going to need to deal with object's that get instantiated from a class or clone,
         // in those cases we need to adjust the key from script+offset, perhaps clone can be (script+1000,ref_count)
 
-        let var_selectors = if obj.info == ClassInfo::Class as u16 {
+        let var_selectors = if obj.info == ObjectType::Class as u16 {
             // Class
             obj.variable_selectors.clone()
         } else {
@@ -280,6 +293,7 @@ impl<'a> PMachine<'a> {
             id: obj.id(),
             name: String::from(&obj.name),
             species: obj.species,
+            object_type: FromPrimitive::from_u16(obj.info).unwrap(),
             variables: RefCell::new(
                 obj.variables
                     .iter()
@@ -330,6 +344,7 @@ impl<'a> PMachine<'a> {
         let mut stack: Vec<Register> = Vec::new();
 
         let mut call_stack: Vec<StackFrame> = Vec::new();
+        let mut rest_modifier = 0;
 
         // TODO: get variables from all loaded scripts, rather than loading again
         let mut global_vars: Vec<Register> = self
@@ -466,6 +481,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x3f => {
                     // link B
+                    // TODO: this may not be correct - in some cases it will be a single string of some length.
                     let num_variables = state.read_u8();
                     for _ in 0..num_variables {
                         stack.push(Register::Undefined);
@@ -477,15 +493,18 @@ impl<'a> PMachine<'a> {
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - stackframe_size / 2 - 1;
+                    let stackframe_start =
+                        stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
+                    rest_modifier = 0;
 
                     call_stack.push(StackFrame {
                         // Unwind position
-                        stackframe_start,
+                        unwind_pos: stackframe_start,
                         // Saving these to return to
                         params_pos: state.params_pos,
                         temp_pos: state.temp_pos,
                         num_params: state.num_params,
+                        stack_len: stackframe_end,
                         script_number: state.script,
                         ip: state.ip,
                         obj: state.current_obj.id,
@@ -503,7 +522,8 @@ impl<'a> PMachine<'a> {
                     // callk B
                     let k_func = state.read_u8();
                     let k_params = state.read_u8() as usize / 2;
-                    let stackframe_start = stack.len() - (k_params + 1);
+                    let stackframe_start = stack.len() - (k_params + 1 + rest_modifier);
+                    rest_modifier = 0;
                     let params = &stack[stackframe_start..];
 
                     let num_params = params[0].to_i16();
@@ -529,15 +549,18 @@ impl<'a> PMachine<'a> {
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - stackframe_size / 2 - 1;
+                    let stackframe_start =
+                        stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
+                    rest_modifier = 0;
 
                     call_stack.push(StackFrame {
                         // Unwind position
-                        stackframe_start,
+                        unwind_pos: stackframe_start,
                         // Saving these to return to
                         params_pos: state.params_pos,
                         temp_pos: state.temp_pos,
                         num_params: state.num_params,
+                        stack_len: stack.len(),
                         script_number: state.script,
                         ip: state.ip,
                         obj: state.current_obj.id,
@@ -579,12 +602,14 @@ impl<'a> PMachine<'a> {
                     state.temp_pos = frame.temp_pos;
                     state.num_params = frame.num_params;
                     state.script = frame.script_number;
-                    // todo! truncate stack to previous length if we are calling more functions
+                    // unwind stack to previous state
+                    stack.truncate(frame.stack_len);
 
+                    let mut running_function = false;
                     let remaining_selectors = &mut frame.remaining_selectors.clone(); // TODO: is clone needed?
                     while !remaining_selectors.is_empty() {
                         let obj = previous_obj;
-                        let start = frame.stackframe_start + remaining_selectors.pop().unwrap();
+                        let start = frame.unwind_pos + remaining_selectors.pop().unwrap();
                         let end = stack.len();
                         let selector = stack[start].to_u16();
                         let pos = start + 1;
@@ -595,20 +620,20 @@ impl<'a> PMachine<'a> {
                             obj,
                             selector,
                             np,
-                            frame.stackframe_start,
+                            frame.unwind_pos,
                             end,
                             pos,
                             remaining_selectors.clone(), // TODO: is clone needed
                         ) {
                             state.current_obj = obj;
                             call_stack.push(frame);
+                            running_function = true;
                             break;
                         }
-                        if remaining_selectors.is_empty() {
-                            // Unwind stack as ret will not be called
-                            let unwind_pos = frame.stackframe_start;
-                            stack.truncate(unwind_pos);
-                        }
+                    }
+                    if !running_function {
+                        // Unwind stack as ret will not be called
+                        stack.truncate(frame.unwind_pos);
                     }
                 }
                 0x4a | 0x4b | 0x54 | 0x55 | 0x57 => {
@@ -630,14 +655,17 @@ impl<'a> PMachine<'a> {
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - stackframe_size / 2;
+                    let stackframe_start = stackframe_end - (stackframe_size / 2 + rest_modifier);
+
+                    // dump_stack(&stack, &state);
 
                     let mut read_selectors_idx = 0;
                     let mut selector_offsets = Vec::new();
                     while read_selectors_idx < stackframe_end - stackframe_start {
                         let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
                         selector_offsets.push(read_selectors_idx);
-                        read_selectors_idx += np as usize + 2;
+                        read_selectors_idx += np as usize + 2 + rest_modifier;
+                        rest_modifier = 0;
                     }
 
                     debug!(
@@ -678,6 +706,13 @@ impl<'a> PMachine<'a> {
 
                     // TODO: do we need to change script?
                     state.ax = Register::Object(obj.id);
+                }
+                0x59 => {
+                    // &rest B paramindex
+                    let index = state.read_u8() as usize;
+                    let rest = &stack[state.params_pos + index..state.temp_pos];
+                    rest_modifier = rest.len();
+                    stack = [&stack, rest].concat();
                 }
                 0x5b => {
                     // lea B type, B index
@@ -954,7 +989,6 @@ impl<'a> PMachine<'a> {
             None
         } else {
             // Function
-
             let (script_number, code_offset) = obj.get_func_selector(selector);
             debug!(
                 "Call send on function {selector} -> {script_number} @{:x} for {} #p: {}",
@@ -963,11 +997,12 @@ impl<'a> PMachine<'a> {
 
             let frame = StackFrame {
                 // Unwind position
-                stackframe_start,
+                unwind_pos: stackframe_start,
                 // Saving these to return to
                 params_pos: state.params_pos,
                 temp_pos: state.temp_pos,
                 num_params: state.num_params,
+                stack_len: stackframe_end,
                 script_number: state.script,
                 ip: state.ip,
                 obj: state.current_obj.id,
@@ -1063,6 +1098,23 @@ impl<'a> PMachine<'a> {
         }
         return None;
     }
+}
+
+fn dump_stack(stack: &Vec<Register>, state: &MachineState) {
+    // TODO: maybe show call stack too
+    dbg!(state.num_params, state.temp_pos, state.params_pos);
+    for i in 0..stack.len() {
+        // TODO: not tracking where temp ends and these are pushing new values for send
+        let indent = if i == state.temp_pos {
+            "temp ===>"
+        } else if i == state.params_pos {
+            "params =>"
+        } else {
+            "         "
+        };
+        debug!("{indent} {:?}", stack[i]);
+    }
+    debug!("num_params: {}", state.num_params);
 }
 
 fn load_vocab_selector_names(resource: &Resource) -> HashMap<u16, &str> {
