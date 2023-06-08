@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap};
 
 use elsa::FrozenMap;
 use global_counter::primitive::exact::CounterUsize;
@@ -579,11 +579,13 @@ impl<'a> PMachine<'a> {
                     state.temp_pos = frame.temp_pos;
                     state.num_params = frame.num_params;
                     state.script = frame.script_number;
+                    // todo! truncate stack to previous length if we are calling more functions
 
                     let remaining_selectors = &mut frame.remaining_selectors.clone(); // TODO: is clone needed?
                     while !remaining_selectors.is_empty() {
                         let obj = previous_obj;
                         let start = frame.stackframe_start + remaining_selectors.pop().unwrap();
+                        let end = stack.len();
                         let selector = stack[start].to_u16();
                         let pos = start + 1;
                         let np = stack[pos].to_u16();
@@ -594,7 +596,7 @@ impl<'a> PMachine<'a> {
                             selector,
                             np,
                             frame.stackframe_start,
-                            frame.temp_pos,
+                            end,
                             pos,
                             remaining_selectors.clone(), // TODO: is clone needed
                         ) {
