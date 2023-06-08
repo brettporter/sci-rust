@@ -554,11 +554,13 @@ impl<'a> PMachine<'a> {
                     let remaining_selectors = &mut frame.remaining_selectors.clone(); // TODO: is clone needed?
                     while !remaining_selectors.is_empty() {
                         let obj = previous_obj;
-                        let pos = remaining_selectors.pop().unwrap();
-                        let selector = stack[frame.stackframe_start + pos].to_u16();
-                        let np = stack[frame.stackframe_start + pos + 1].to_u16();
+                        let start = frame.stackframe_start + remaining_selectors.pop().unwrap();
+                        let selector = stack[start].to_u16();
+                        let pos = start + 1;
+                        let np = stack[pos].to_u16();
                         if let Some(frame) = self.send_to_selector(
                             &mut state,
+                            &stack[pos..=pos + np as usize],
                             obj,
                             selector,
                             np,
@@ -613,11 +615,13 @@ impl<'a> PMachine<'a> {
                         obj.name
                     );
                     while !selector_offsets.is_empty() {
-                        let pos = selector_offsets.pop().unwrap();
-                        let selector = stack[stackframe_start + pos].to_u16();
-                        let np = stack[stackframe_start + pos + 1].to_u16();
+                        let start = stackframe_start + selector_offsets.pop().unwrap();
+                        let selector = stack[start].to_u16();
+                        let pos = start + 1;
+                        let np = stack[pos].to_u16();
                         if let Some(frame) = self.send_to_selector(
                             &mut state,
+                            &stack[pos..=pos + np as usize],
                             obj,
                             selector,
                             np,
@@ -896,13 +900,14 @@ impl<'a> PMachine<'a> {
     fn send_to_selector(
         &self,
         state: &mut MachineState,
+        params: &[Register],
         obj: &ObjectInstance,
         selector: u16,
         num_params: u16,
         // TODO: remove these params
         stackframe_start: usize,
         stackframe_end: usize,
-        pos: usize,
+        params_pos: usize,
         selector_offsets: Vec<usize>,
     ) -> Option<StackFrame> {
         debug!("Sending to selector {:x} for {}", selector, obj.name); // TODO: params
@@ -913,7 +918,7 @@ impl<'a> PMachine<'a> {
                 // get
                 state.ax = obj.get_property(selector);
             } else {
-                obj.set_property(selector, state.ax);
+                obj.set_property(selector, params[1]);
             }
             None
         } else {
@@ -942,7 +947,7 @@ impl<'a> PMachine<'a> {
             state.code = script.data.clone();
             state.ip = code_offset as usize;
 
-            state.params_pos = stackframe_start + pos + 1;
+            state.params_pos = params_pos;
             state.temp_pos = stackframe_end;
             state.num_params = num_params;
             state.script = script_number;
