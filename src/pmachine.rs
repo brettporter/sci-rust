@@ -167,6 +167,14 @@ impl Register {
         assert!(v >= 0);
         v as u16
     }
+
+    fn is_zero_or_null(&self) -> bool {
+        match *self {
+            Register::Value(v) => v == 0,
+            Register::Object(v) => v == 0,
+            _ => panic!("Register {:?} doesn't have a zero value", *self),
+        }
+    }
 }
 
 // TODO: should this be an enum?
@@ -398,7 +406,7 @@ impl<'a> PMachine<'a> {
                 0x30 => {
                     // bnt W
                     let pos = state.read_i16();
-                    if state.ax.to_i16() == 0 {
+                    if state.ax.is_zero_or_null() {
                         state.jump(pos);
                     }
                 }
