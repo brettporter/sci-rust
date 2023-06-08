@@ -1,6 +1,7 @@
 use std::{borrow::Borrow, cell::RefCell, collections::HashMap};
 
 use elsa::FrozenMap;
+use global_counter::primitive::exact::CounterUsize;
 use itertools::Itertools;
 use log::{debug, info};
 use num_traits::FromPrimitive;
@@ -91,6 +92,9 @@ impl MachineState<'_> {
     }
 }
 
+// Counter for clones. Starting value ensures no overlap with existing IDs
+const CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
+
 #[derive(Debug)]
 struct ObjectInstance {
     id: usize,
@@ -134,6 +138,23 @@ impl ObjectInstance {
             .find_position(|&s| *s == selector)
             .unwrap();
         self.variables.borrow_mut()[idx] = value
+    }
+
+    fn kernel_clone(&self) -> Box<ObjectInstance> {
+        // Currently using a global counter for all clones
+        // alternative: <clone num (6)>:<script num (10)>:<offset (16)>
+        let id = CLONE_COUNTER.inc();
+        let instance = ObjectInstance {
+            id,
+            name: self.name.clone(), // TODO: modify?
+            species: self.species,
+            variables: self.variables.clone(),
+            var_selectors: Vec::new(),
+            func_selectors: HashMap::new(),
+        };
+        // TODO: do we copy variable selectors in one case?
+        // TODO: what about -info- modification to set to 1?
+        Box::new(instance)
     }
 }
 
@@ -992,11 +1013,13 @@ impl<'a> PMachine<'a> {
             }
             0x04 => {
                 // Clone
-                let obj = params[1].to_obj();
-                todo!("This is not correct, temporary");
-                // info!("Kernel> Clone obj: {}", obj.name);
-                // TODO: clone it, update info and selectors as documented
-                // TODO: put the heap ptr into ax
+                // TODO: wrap all the direct uses of object_cache
+                let obj = self.object_cache.get(&params[1].to_obj()).unwrap();
+                info!("Kernel> Clone obj: {}", obj.name);
+                let clone = obj.kernel_clone();
+                let id = clone.id;
+                self.object_cache.insert(id, clone);
+                return Some(Register::Object(id));
             }
             0x0b => {
                 // Animate
