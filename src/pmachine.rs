@@ -371,11 +371,16 @@ impl<'a> PMachine<'a> {
             let cmd = state.read_u8();
             debug!("[{}@{:x}] Executing {:x}", state.script, state.ip - 1, cmd);
             // TODO: do we do constants for opcodes? Do we enumberate the B / W variants or add tooling for this?
+            // TODO: can we simplify all the unwrapping
             //todo!("we need to check all the var indexes as they may be byte offsets not numbers in 0x80..0xff");
             match cmd {
+                0x02 | 0x03 => {
+                    // add
+                    state.ax.add(stack.pop().unwrap().to_i16());
+                }
                 0x04 | 0x05 => {
                     // sub
-                    // TODO: can we simplify all the unwrapping
+                    // TODO: do we want methods like add for register to trim these?
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() - state.ax.to_i16());
                 }
                 0x06 | 0x07 => {
