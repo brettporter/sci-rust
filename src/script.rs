@@ -215,7 +215,7 @@ impl Script {
         self.objects.iter().find(|&o| o.offset == offset)
     }
 
-    pub(crate) fn get_dispatch_address(&self, dispatch_number: i16) -> u16 {
+    pub(crate) fn get_dispatch_address(&self, dispatch_number: u16) -> u16 {
         self.exports[dispatch_number as usize]
     }
 }

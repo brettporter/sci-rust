@@ -58,6 +58,7 @@ struct MachineState<'a> {
     params_pos: usize,
     temp_pos: usize,
     num_params: u16,
+    rest_modifier: usize,
     script: u16,
 }
 impl MachineState<'_> {
@@ -344,13 +345,13 @@ impl<'a> PMachine<'a> {
             params_pos: 0, // TODO: is this relevant without a call stack?
             num_params: 0, // TODO: is this relevant without a call stack?
             temp_pos: 0,   // TODO: is this relevant without a call stack?
+            rest_modifier: 0,
             script: run_script_number,
         };
 
         let mut stack: Vec<Register> = Vec::new();
 
         let mut call_stack: Vec<StackFrame> = Vec::new();
-        let mut rest_modifier = 0;
 
         // TODO: get variables from all loaded scripts, rather than loading again
         let mut global_vars: Vec<Register> = self
@@ -512,10 +513,10 @@ impl<'a> PMachine<'a> {
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start =
-                        stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
-                    if rest_modifier > 0 {
-                        stack[stackframe_start].add(rest_modifier as i16);
-                        rest_modifier = 0;
+                        stackframe_end - (stackframe_size / 2 + 1 + state.rest_modifier);
+                    if state.rest_modifier > 0 {
+                        stack[stackframe_start].add(state.rest_modifier as i16);
+                        state.rest_modifier = 0;
                     }
 
                     call_stack.push(StackFrame {
@@ -543,10 +544,10 @@ impl<'a> PMachine<'a> {
                     // callk B
                     let k_func = state.read_u8();
                     let k_params = state.read_u8() as usize / 2;
-                    let stackframe_start = stack.len() - (k_params + 1 + rest_modifier);
-                    if rest_modifier > 0 {
-                        stack[stackframe_start].add(rest_modifier as i16);
-                        rest_modifier = 0;
+                    let stackframe_start = stack.len() - (k_params + 1 + state.rest_modifier);
+                    if state.rest_modifier > 0 {
+                        stack[stackframe_start].add(state.rest_modifier as i16);
+                        state.rest_modifier = 0;
                     }
                     let params = &stack[stackframe_start..];
 
@@ -569,43 +570,31 @@ impl<'a> PMachine<'a> {
                 }
                 0x45 => {
                     // callb B dispindex, B framesize
-                    let dispatch_index = state.read_u8() as i16;
-
+                    let dispatch_index = state.read_u8() as u16;
                     let stackframe_size = state.read_u8() as usize;
-                    let stackframe_end = stack.len();
-                    let stackframe_start =
-                        stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
-                    if rest_modifier > 0 {
-                        stack[stackframe_start].add(rest_modifier as i16);
-                        rest_modifier = 0;
-                    }
+                    self.call_dispatch_index(
+                        SCRIPT_MAIN,
+                        dispatch_index,
+                        stackframe_size,
+                        &mut stack,
+                        &mut state,
+                        &mut call_stack,
+                    );
+                }
+                0x46 => {
+                    // calle W script, W dispindex, B framesize
+                    let script_num = state.read_u16();
+                    let dispatch_index = state.read_u16();
+                    let stackframe_size = state.read_u8() as usize;
 
-                    call_stack.push(StackFrame {
-                        // Unwind position
-                        unwind_pos: stackframe_start,
-                        // Saving these to return to
-                        params_pos: state.params_pos,
-                        temp_pos: state.temp_pos,
-                        num_params: state.num_params,
-                        stack_len: stack.len(),
-                        script_number: state.script,
-                        ip: state.ip,
-                        obj: state.current_obj.id,
-                        remaining_selectors: Vec::new(),
-                    });
-
-                    // As opposed to send, does not start with selector
-                    state.num_params = stack[stackframe_start].to_u16();
-
-                    // Switch to base script
-                    // todo!("this combination should be done in state to ensure it's always done together");
-                    state.script = SCRIPT_MAIN;
-                    let script = self.load_script(state.script);
-                    state.code = script.data.clone(); // TODO: remove clone
-                    state.ip = script.get_dispatch_address(dispatch_index) as usize;
-
-                    state.params_pos = stackframe_start; // argc is included
-                    state.temp_pos = stackframe_end;
+                    self.call_dispatch_index(
+                        script_num,
+                        dispatch_index,
+                        stackframe_size,
+                        &mut stack,
+                        &mut state,
+                        &mut call_stack,
+                    );
                 }
                 0x48 | 0x49 => {
                     // ret
@@ -682,7 +671,8 @@ impl<'a> PMachine<'a> {
 
                     let stackframe_size = state.read_u8() as usize;
                     let stackframe_end = stack.len();
-                    let stackframe_start = stackframe_end - (stackframe_size / 2 + rest_modifier);
+                    let stackframe_start =
+                        stackframe_end - (stackframe_size / 2 + state.rest_modifier);
 
                     // dump_stack(&stack, &state);
 
@@ -691,13 +681,13 @@ impl<'a> PMachine<'a> {
                     while read_selectors_idx < stackframe_end - stackframe_start {
                         let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
                         selector_offsets.push(read_selectors_idx);
-                        read_selectors_idx += np as usize + 2 + rest_modifier;
-                        if rest_modifier > 0 {
+                        read_selectors_idx += np as usize + 2 + state.rest_modifier;
+                        if state.rest_modifier > 0 {
                             // Only support rest modifier for one selector, otherwise behaviour is undefined
                             assert!(read_selectors_idx == stackframe_end - stackframe_start);
                             // add rest_modifier to number of parameters on the stack
-                            stack[stackframe_start + 1].add(rest_modifier as i16);
-                            rest_modifier = 0;
+                            stack[stackframe_start + 1].add(state.rest_modifier as i16);
+                            state.rest_modifier = 0;
                         }
                     }
 
@@ -744,7 +734,7 @@ impl<'a> PMachine<'a> {
                     // &rest B paramindex
                     let index = state.read_u8() as usize;
                     let rest = &stack[state.params_pos + index..state.temp_pos];
-                    rest_modifier = rest.len();
+                    state.rest_modifier = rest.len();
                     stack = [&stack, rest].concat();
                 }
                 0x5b => {
@@ -1072,7 +1062,7 @@ impl<'a> PMachine<'a> {
                 // ScriptID
                 let script_number = params[1].to_i16();
                 let dispatch_number = if params.len() - 1 > 1 {
-                    params[2].to_i16()
+                    params[2].to_u16()
                 } else {
                     0
                 };
@@ -1136,6 +1126,50 @@ impl<'a> PMachine<'a> {
             }
         }
         return None;
+    }
+
+    fn call_dispatch_index(
+        &self,
+        script_num: u16,
+        dispatch_index: u16,
+        stackframe_size: usize,
+        stack: &mut [Register],
+        state: &mut MachineState,
+        call_stack: &mut Vec<StackFrame>,
+    ) {
+        let stackframe_end = stack.len();
+        let stackframe_start = stackframe_end - (stackframe_size / 2 + 1 + state.rest_modifier);
+        if state.rest_modifier > 0 {
+            stack[stackframe_start].add(state.rest_modifier as i16);
+            state.rest_modifier = 0;
+        }
+
+        call_stack.push(StackFrame {
+            // Unwind position
+            unwind_pos: stackframe_start,
+            // Saving these to return to
+            params_pos: state.params_pos,
+            temp_pos: state.temp_pos,
+            num_params: state.num_params,
+            stack_len: stack.len(),
+            script_number: state.script,
+            ip: state.ip,
+            obj: state.current_obj.id,
+            remaining_selectors: Vec::new(),
+        });
+
+        // As opposed to send, does not start with selector
+        state.num_params = stack[stackframe_start].to_u16();
+
+        // Switch to script
+        // todo!("this combination should be done in state to ensure it's always done together");
+        state.script = script_num;
+        let script = self.load_script(state.script);
+        state.code = script.data.clone(); // TODO: remove clone
+        state.ip = script.get_dispatch_address(dispatch_index) as usize;
+
+        state.params_pos = stackframe_start; // argc is included
+        state.temp_pos = stackframe_end;
     }
 }
 
