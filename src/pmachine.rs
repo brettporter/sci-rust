@@ -114,6 +114,7 @@ enum ObjectType {
 }
 
 // Counter for clones. Starting value ensures no overlap with existing IDs
+// Note: because we are cloning an event every tick this will grow fast, but we have more than enough space in a usize
 static CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
 
 #[derive(Debug)]
