@@ -46,9 +46,12 @@ struct StackFrame {
     remaining_selectors: Vec<usize>,
 }
 
+// TODO: remove lifecycle by owning the bits of object instance needed for state
+// and looking up the rest when used
 struct MachineState<'a> {
     ip: usize, // instruction pointer
-    // TODO: should this just be current_obj data and ip offset modified
+    // TODO: should this just be current_obj data and ip offset modified?
+    // Don't need code stored here as we can look it up from the script
     code: Box<Vec<u8>>, // currently executing script data
     current_obj: &'a ObjectInstance,
     ax: Register,
@@ -158,9 +161,11 @@ impl ObjectInstance {
         let id = CLONE_COUNTER.inc();
         // TODO: spec says selectors should be empty - but it might just mean in the memory space and can still look up the inherited ones,
         // or perhaps it calls on a different object with a current object pointer to the clone. May be ok to clone selectors here but re-evaluate if problems.
+
+        // TODO: can avoid cloning?
         let instance = ObjectInstance {
             id,
-            name: self.name.clone(), // TODO: modify?
+            name: self.name.clone(), // TODO: modify to represent clone?
             object_type: ObjectType::Clone,
             species: self.species,
             variables: self.variables.clone(),
@@ -177,9 +182,8 @@ enum Register {
     Object(usize),
     Variable(VariableType, i16),
     String(usize),
-    // TODO: include heap pointers?
-    Undefined,
     Address(u16, usize),
+    Undefined,
 }
 impl Register {
     fn to_i16(&self) -> i16 {
@@ -285,9 +289,8 @@ impl<'a> PMachine<'a> {
         if let Some(o) = self.object_cache.get(&obj.id()) {
             return o;
         }
-        // TODO: we are going to need to deal with object's that get instantiated from a class or clone,
-        // in those cases we need to adjust the key from script+offset, perhaps clone can be (script+1000,ref_count)
 
+        // TODO: ways of avoiding clone? We can move the class def into here
         let var_selectors = if obj.info == ObjectType::Class as u16 {
             // Class
             obj.variable_selectors.clone()
@@ -304,9 +307,14 @@ impl<'a> PMachine<'a> {
             variables: RefCell::new(
                 obj.variables
                     .iter()
-                    .map(|&v| Register::Value(v as i16)) // TODO: check cast
+                    .map(|&v| {
+                        // TODO: check case. Script 995 has a value that is either 32768 or -32768
+                        // Perhaps -1 and i16::MAX are special cases?
+                        // assert!(v <= i16::MAX as u16);
+                        Register::Value(v as i16)
+                    })
                     .collect_vec(),
-            ), // TODO: is clone necessary?
+            ),
             var_selectors,
             func_selectors: self.get_inherited_functions(&obj),
         };
@@ -324,7 +332,7 @@ impl<'a> PMachine<'a> {
         );
 
         // This becomes the main loop
-        // TODO: pass in event handling to be able to handle events and quit
+        // todo!("pass in event handling to be able to handle events and quit")
 
         // TODO: better to do this by execution a machine function? Not happy with passing all the info in
 
@@ -342,9 +350,9 @@ impl<'a> PMachine<'a> {
             ip: run_code_offset as usize,
             current_obj: run_obj,
             ax: Register::Undefined,
-            params_pos: 0, // TODO: is this relevant without a call stack?
-            num_params: 0, // TODO: is this relevant without a call stack?
-            temp_pos: 0,   // TODO: is this relevant without a call stack?
+            params_pos: 0,
+            num_params: 0,
+            temp_pos: 0,
             rest_modifier: 0,
             script: run_script_number,
         };
@@ -505,7 +513,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x3f => {
                     // link B
-                    // TODO: this may not be correct - in some cases it will be a single string of some length.
+                    // todo!(): this may not be correct - in some cases it will be a single string of some length.
                     let num_variables = state.read_u8();
                     for _ in 0..num_variables {
                         stack.push(Register::Undefined);
@@ -644,7 +652,7 @@ impl<'a> PMachine<'a> {
                             frame.unwind_pos,
                             end,
                             pos,
-                            remaining_selectors.clone(), // TODO: is clone needed
+                            remaining_selectors.clone(), // TODO: is clone needed again?
                         ) {
                             state.current_obj = obj;
                             call_stack.push(frame);
@@ -1113,7 +1121,6 @@ impl<'a> PMachine<'a> {
                 // Clone
                 // TODO: wrap all the direct uses of object_cache
                 let obj = self.object_cache.get(&params[1].to_obj()).unwrap();
-                dbg!(obj); // TODO: for event, check this is Event and not Obj
                 let clone = obj.kernel_clone();
                 let id = clone.id;
                 info!("Kernel> Clone obj: {} to {id}", obj.name);
