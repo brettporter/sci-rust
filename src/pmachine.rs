@@ -209,6 +209,13 @@ impl Register {
             _ => panic!("Register {:?} doesn't have a zero value", *self),
         }
     }
+
+    fn add(&mut self, inc: i16) {
+        *self = match *self {
+            Register::Value(v) => Register::Value(v + inc),
+            _ => panic!("Register was not a value {:?}", self),
+        }
+    }
 }
 
 // TODO: should this be an enum?
@@ -504,7 +511,10 @@ impl<'a> PMachine<'a> {
                     let stackframe_end = stack.len();
                     let stackframe_start =
                         stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
-                    rest_modifier = 0;
+                    if rest_modifier > 0 {
+                        stack[stackframe_start].add(rest_modifier as i16);
+                        rest_modifier = 0;
+                    }
 
                     call_stack.push(StackFrame {
                         // Unwind position
@@ -532,7 +542,10 @@ impl<'a> PMachine<'a> {
                     let k_func = state.read_u8();
                     let k_params = state.read_u8() as usize / 2;
                     let stackframe_start = stack.len() - (k_params + 1 + rest_modifier);
-                    rest_modifier = 0;
+                    if rest_modifier > 0 {
+                        stack[stackframe_start].add(rest_modifier as i16);
+                        rest_modifier = 0;
+                    }
                     let params = &stack[stackframe_start..];
 
                     let num_params = params[0].to_i16();
@@ -560,7 +573,10 @@ impl<'a> PMachine<'a> {
                     let stackframe_end = stack.len();
                     let stackframe_start =
                         stackframe_end - (stackframe_size / 2 + 1 + rest_modifier);
-                    rest_modifier = 0;
+                    if rest_modifier > 0 {
+                        stack[stackframe_start].add(rest_modifier as i16);
+                        rest_modifier = 0;
+                    }
 
                     call_stack.push(StackFrame {
                         // Unwind position
@@ -674,7 +690,13 @@ impl<'a> PMachine<'a> {
                         let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
                         selector_offsets.push(read_selectors_idx);
                         read_selectors_idx += np as usize + 2 + rest_modifier;
-                        rest_modifier = 0;
+                        if rest_modifier > 0 {
+                            // Only support rest modifier for one selector, otherwise behaviour is undefined
+                            assert!(read_selectors_idx == stackframe_end - stackframe_start);
+                            // add rest_modifier to number of parameters on the stack
+                            stack[stackframe_start + 1].add(rest_modifier as i16);
+                            rest_modifier = 0;
+                        }
                     }
 
                     debug!(
@@ -750,13 +772,19 @@ impl<'a> PMachine<'a> {
                 0x63 => {
                     // pToa B offset
                     let offset = state.read_u8();
-                    debug!("property @offset {offset} to acc");
+                    debug!(
+                        "property @offset {offset} to acc for {}",
+                        state.current_obj.id
+                    );
                     state.ax = state.current_obj.get_property_by_offset(offset);
                 }
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
-                    debug!("acc to property @offset {offset}");
+                    debug!(
+                        "acc to property @offset {offset} for {}",
+                        state.current_obj.id
+                    );
                     state.current_obj.set_property_by_offset(offset, state.ax);
                 }
                 0x67 => {
@@ -770,9 +798,8 @@ impl<'a> PMachine<'a> {
                     let offset = state.read_u8();
                     debug!("increment property @offset {offset} to acc");
                     state.ax = state.current_obj.get_property_by_offset(offset);
-                    state
-                        .current_obj
-                        .set_property_by_offset(offset, Register::Value(state.ax.to_i16() + 1));
+                    state.ax.add(1);
+                    state.current_obj.set_property_by_offset(offset, state.ax);
                 }
                 0x72 => {
                     // lofsa W
@@ -1000,8 +1027,8 @@ impl<'a> PMachine<'a> {
             // Function
             let (script_number, code_offset) = obj.get_func_selector(selector);
             debug!(
-                "Call send on function {selector} -> {script_number} @{:x} for {} #p: {}",
-                code_offset, obj.name, num_params
+                "Call send on function {:x} -> {script_number} @{:x} for {} params: {:?}",
+                selector, code_offset, obj.name, params
             );
 
             let frame = StackFrame {
