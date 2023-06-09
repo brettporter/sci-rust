@@ -1117,9 +1117,9 @@ impl<'a> PMachine<'a> {
             0x1c => {
                 // GetEvent
                 let flags = params[1].to_i16();
-                let event = params[2].to_obj();
-                todo!("how do we convert this into an object instance that we can mutate?");
-                // info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
+                let event = self.object_cache.get(&params[2].to_obj()).unwrap();
+                // todo!("how do we convert this into an object instance that we can mutate?");
+                info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
                 // TODO: check the events, but for now just return null event
                 return Some(Register::Value(0));
             }
