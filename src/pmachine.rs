@@ -19,7 +19,7 @@ pub(crate) struct PMachine<'a> {
     object_cache: FrozenMap<usize, Box<ObjectInstance>>,
 }
 
-#[derive(FromPrimitive, Copy, Clone, Debug)]
+#[derive(FromPrimitive, Copy, Clone, Debug, PartialEq)]
 enum VariableType {
     Global,
     Local,
@@ -171,8 +171,7 @@ impl ObjectInstance {
     }
 }
 
-// TODO: get rid of lifetime in here
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum Register {
     Value(i16),
     Object(usize),
@@ -405,12 +404,11 @@ impl<'a> PMachine<'a> {
                 }
                 0x1c | 0x1d => {
                     // ne?
-                    state.ax =
-                        Register::Value(if state.ax.to_i16() != stack.pop().unwrap().to_i16() {
-                            1
-                        } else {
-                            0
-                        });
+                    state.ax = Register::Value(if state.ax != stack.pop().unwrap() {
+                        1
+                    } else {
+                        0
+                    });
                 }
                 0x1e | 0x1f => {
                     // gt?
