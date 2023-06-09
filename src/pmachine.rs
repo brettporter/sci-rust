@@ -157,15 +157,14 @@ impl ObjectInstance {
         // Currently using a global counter for all clones
         let id = CLONE_COUNTER.inc();
         // TODO: spec says selectors should be empty - but it might just mean in the memory space and can still look up the inherited ones,
-        // or perhaps it calls on a different object with a current object pointer to the clone. May be ok to clone function selectors here
-        // (and may need to do variables too), but re-evaluate if problems.
+        // or perhaps it calls on a different object with a current object pointer to the clone. May be ok to clone selectors here but re-evaluate if problems.
         let instance = ObjectInstance {
             id,
             name: self.name.clone(), // TODO: modify?
             object_type: ObjectType::Clone,
             species: self.species,
             variables: self.variables.clone(),
-            var_selectors: Vec::new(),
+            var_selectors: self.var_selectors.clone(),
             func_selectors: self.func_selectors.clone(),
         };
         Box::new(instance)
@@ -639,6 +638,7 @@ impl<'a> PMachine<'a> {
                             &mut state,
                             &stack[pos..=pos + np as usize],
                             obj,
+                            obj, // TODO: is this right for self with multiple selectors?
                             selector,
                             np,
                             frame.unwind_pos,
@@ -659,16 +659,20 @@ impl<'a> PMachine<'a> {
                 }
                 0x4a | 0x4b | 0x54 | 0x55 | 0x57 => {
                     // TODO: factor out a method and make this separate again. Curently hard with local variables in here.
-                    let obj = if cmd == 0x54 || cmd == 0x55 {
+                    let (obj, send_obj) = if cmd == 0x54 || cmd == 0x55 {
                         // self B selector
-                        state.current_obj
+                        (state.current_obj, state.current_obj)
                     } else if cmd == 0x57 {
                         // super B class B stackframe
                         let class_num = state.read_u8() as u16;
-                        self.initialise_object_from_class(class_num)
+                        (
+                            state.current_obj,
+                            self.initialise_object_from_class(class_num),
+                        )
                     } else {
                         // send B
-                        self.object_cache.get(&state.ax.to_obj()).unwrap()
+                        let obj = self.object_cache.get(&state.ax.to_obj()).unwrap();
+                        (obj, obj)
                     };
 
                     // TODO: instead of just pushing onto an execution stack and looping
@@ -697,9 +701,10 @@ impl<'a> PMachine<'a> {
                     }
 
                     debug!(
-                        "Sending to {} selectors for {}",
+                        "Sending to {} selectors for {} to {}",
                         selector_offsets.len(),
-                        obj.name
+                        obj.name,
+                        send_obj.name
                     );
                     while !selector_offsets.is_empty() {
                         let start = stackframe_start + selector_offsets.pop().unwrap();
@@ -710,6 +715,7 @@ impl<'a> PMachine<'a> {
                             &mut state,
                             &stack[pos..=pos + np as usize],
                             obj,
+                            send_obj,
                             selector,
                             np,
                             stackframe_start,
@@ -1015,6 +1021,7 @@ impl<'a> PMachine<'a> {
         state: &mut MachineState,
         params: &[Register],
         obj: &ObjectInstance,
+        send_obj: &ObjectInstance,
         selector: u16,
         num_params: u16,
         // TODO: remove these params
@@ -1023,24 +1030,28 @@ impl<'a> PMachine<'a> {
         params_pos: usize,
         selector_offsets: Vec<usize>,
     ) -> Option<StackFrame> {
-        debug!("Sending to selector {:x} for {}", selector, obj.name); // TODO: params
-
         if obj.has_var_selector(selector) {
             // Variable
             if num_params == 0 {
                 // get
+                debug!("Get variable by selector {:x} on {}", selector, obj.name);
                 state.ax = obj.get_property(selector);
             } else {
+                debug!(
+                    "Set variable by selector {:x} on {} to {:?}",
+                    selector, obj.name, state.ax
+                );
                 obj.set_property(selector, params[1]);
             }
             None
         } else {
             // Function
-            let (script_number, code_offset) = obj.get_func_selector(selector);
             debug!(
-                "Call send on function {:x} -> {script_number} @{:x} for {} params: {:?}",
-                selector, code_offset, obj.name, params
+                "Call send on function {:x} for {} to {} params: {:?}",
+                selector, obj.name, send_obj.name, params
             );
+            let (script_number, code_offset) = send_obj.get_func_selector(selector);
+            debug!("    -> {script_number} @{:x}", code_offset);
 
             let frame = StackFrame {
                 // Unwind position
@@ -1102,6 +1113,7 @@ impl<'a> PMachine<'a> {
                 // Clone
                 // TODO: wrap all the direct uses of object_cache
                 let obj = self.object_cache.get(&params[1].to_obj()).unwrap();
+                dbg!(obj); // TODO: for event, check this is Event and not Obj
                 let clone = obj.kernel_clone();
                 let id = clone.id;
                 info!("Kernel> Clone obj: {} to {id}", obj.name);
