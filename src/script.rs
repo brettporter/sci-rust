@@ -57,7 +57,6 @@ pub(crate) struct ClassDefinition {
 impl ClassDefinition {
     // TODO: set on construction
     pub(crate) fn id(&self) -> usize {
-        // TODO: what about clones?
         assert!(self.offset < u16::MAX as usize);
         usize::from(self.script_number) << 16 | self.offset
     }

@@ -104,7 +104,7 @@ enum ObjectType {
 }
 
 // Counter for clones. Starting value ensures no overlap with existing IDs
-const CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
+static CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
 
 #[derive(Debug)]
 struct ObjectInstance {
@@ -1061,9 +1061,10 @@ impl<'a> PMachine<'a> {
                 // Clone
                 // TODO: wrap all the direct uses of object_cache
                 let obj = self.object_cache.get(&params[1].to_obj()).unwrap();
-                info!("Kernel> Clone obj: {}", obj.name);
                 let clone = obj.kernel_clone();
                 let id = clone.id;
+                info!("Kernel> Clone obj: {} to {id}", obj.name);
+                assert!(self.object_cache.get(&id).is_none());
                 self.object_cache.insert(id, clone);
                 return Some(Register::Object(id));
             }
