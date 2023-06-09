@@ -414,6 +414,15 @@ impl<'a> PMachine<'a> {
                             0
                         });
                 }
+                0x20 | 0x21 => {
+                    // ge?
+                    state.ax =
+                        Register::Value(if stack.pop().unwrap().to_i16() >= state.ax.to_i16() {
+                            1
+                        } else {
+                            0
+                        });
+                }
                 0x22 | 0x23 => {
                     // lt?
                     state.ax =
