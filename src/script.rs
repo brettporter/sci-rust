@@ -31,6 +31,7 @@ pub(crate) struct Script {
     classes: Vec<ClassDefinition>,
     objects: Vec<ClassDefinition>,
     strings: Vec<StringDefinition>,
+    said_specs: Vec<SaidDefinition>,
     main_object_offset: Option<usize>,
     pub data: Box<Vec<u8>>,
 }
@@ -65,6 +66,11 @@ impl ClassDefinition {
 pub(crate) struct StringDefinition {
     pub offset: usize,
     pub string: String,
+}
+
+pub(crate) struct SaidDefinition {
+    pub offset: usize,
+    pub spec: Vec<u8>,
 }
 
 impl Script {
@@ -115,6 +121,7 @@ impl Script {
         let mut objects = Vec::new();
         let mut variables = RefCell::new(Vec::new());
         let mut strings = Vec::new();
+        let mut said_specs = Vec::new();
         for block in blocks {
             // TODO: for rest - match on block type and store the data, e.g. exports. Parse it if possible.
             match block.block_type {
@@ -127,7 +134,16 @@ impl Script {
                 }
                 ScriptBlockType::SynonymWordList => todo!(),
                 ScriptBlockType::Said => {
-                    debug!("Said spec (first byte {:x})", block.block_data[0]);
+                    let specs = block.block_data.split(|&c| c == 0xff);
+                    let mut index = 0;
+                    for spec in specs.filter(|&s| s != [0]) {
+                        debug!("Said spec ({:x?})", spec);
+                        said_specs.push(SaidDefinition {
+                            offset: block.block_offset + index,
+                            spec: spec.to_vec(),
+                        });
+                        index += spec.len() + 1;
+                    }
                 }
                 ScriptBlockType::Strings => {
                     let mut index = 0;
@@ -193,6 +209,7 @@ impl Script {
             objects,
             variables,
             strings,
+            said_specs,
             main_object_offset,
             data,
         }
@@ -220,6 +237,10 @@ impl Script {
 
     pub(crate) fn get_dispatch_address(&self, dispatch_number: u16) -> u16 {
         self.exports[dispatch_number as usize]
+    }
+
+    pub(crate) fn get_get_said_by_offset(&self, offset: usize) -> Option<&SaidDefinition> {
+        self.said_specs.iter().find(|&s| s.offset == offset)
     }
 }
 

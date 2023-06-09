@@ -829,11 +829,12 @@ impl<'a> PMachine<'a> {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
                         Register::String(s.offset)
+                    } else if let Some(s) = script.get_get_said_by_offset(v) {
+                        // todo!("support 'said'");
+                        Register::Address(state.script, s.offset)
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
-                        // TODO: support 'said'
-                        // todo!("Unknown method loading from address {:x}", v);
-                        Register::Undefined
+                        todo!("Unknown method loading from address {:x}", v);
                     };
                 }
                 0x76 | 0x77 => {
