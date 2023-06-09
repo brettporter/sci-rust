@@ -96,6 +96,11 @@ impl MachineState<'_> {
         assert!(v >= 0);
         v as u16
     }
+
+    fn update_script(&mut self, script: &Script) {
+        self.script = script.number;
+        self.code = script.data.clone(); // TODO: remove clone
+    }
 }
 
 // TODO: should probably be bitflags instead in the script reader, and then just defining the type of object/clone/class in here as needed
@@ -380,7 +385,6 @@ impl<'a> PMachine<'a> {
             debug!("[{}@{:x}] Executing {:x}", state.script, state.ip - 1, cmd);
             // TODO: do we do constants for opcodes? Do we enumberate the B / W variants or add tooling for this?
             // TODO: can we simplify all the unwrapping
-            //todo!("we need to check all the var indexes as they may be byte offsets not numbers in 0x80..0xff");
             match cmd {
                 0x02 | 0x03 => {
                     // add
@@ -622,14 +626,13 @@ impl<'a> PMachine<'a> {
 
                     let previous_obj = state.current_obj;
                     let script = self.load_script(frame.script_number);
-                    state.code = script.data.clone(); // TODO: remove clone
+                    state.update_script(script);
                     state.ip = frame.ip;
                     state.current_obj = self.object_cache.get(&frame.obj).unwrap();
 
                     state.params_pos = frame.params_pos;
                     state.temp_pos = frame.temp_pos;
                     state.num_params = frame.num_params;
-                    state.script = frame.script_number;
                     // unwind stack to previous state
                     stack.truncate(frame.stack_len);
 
@@ -930,7 +933,6 @@ impl<'a> PMachine<'a> {
                     // sal B
                     let var = state.read_u8();
                     debug!("store accumulator to local {}", var);
-                    // TODO! I'm guessing this needs to be the current_obj, not this script
                     let script = self.load_script(state.script);
                     script.variables.borrow_mut()[var as usize] = state.ax.to_u16();
                 }
@@ -1076,13 +1078,12 @@ impl<'a> PMachine<'a> {
             };
 
             let script = self.load_script(script_number);
-            state.code = script.data.clone();
+            state.update_script(script);
             state.ip = code_offset as usize;
 
             state.params_pos = params_pos;
             state.temp_pos = stackframe_end;
             state.num_params = num_params;
-            state.script = script_number;
             Some(frame)
         }
     }
@@ -1137,7 +1138,6 @@ impl<'a> PMachine<'a> {
                 // GetEvent
                 let flags = params[1].to_i16();
                 let event = self.object_cache.get(&params[2].to_obj()).unwrap();
-                // todo!("how do we convert this into an object instance that we can mutate?");
                 info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
                 // TODO: check the events, but for now just return null event
                 return Some(Register::Value(0));
@@ -1211,10 +1211,8 @@ impl<'a> PMachine<'a> {
         state.num_params = stack[stackframe_start].to_u16();
 
         // Switch to script
-        // todo!("this combination should be done in state to ensure it's always done together");
-        state.script = script_num;
-        let script = self.load_script(state.script);
-        state.code = script.data.clone(); // TODO: remove clone
+        let script = self.load_script(script_num);
+        state.update_script(script);
         state.ip = script.get_dispatch_address(dispatch_index) as usize;
 
         state.params_pos = stackframe_start; // argc is included
