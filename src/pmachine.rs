@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, time::Duration};
 
 use elsa::FrozenMap;
 use global_counter::primitive::exact::CounterUsize;
@@ -1152,10 +1152,10 @@ impl<'a> PMachine<'a> {
             0x45 => {
                 // Wait
                 let ticks = params[1].to_i16();
-                // TODO: do wait, set return value
                 info!("Kernel> Wait ticks: {:x}", ticks);
-                // TODO: do this for kWait
-                // ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+                const TICK_DURATION: u32 = 1_000_000_000u32 / 60;
+                ::std::thread::sleep(Duration::new(0, ticks as u32 * TICK_DURATION));
+                // TODO: set return value
             }
             0x51 => {
                 // CanBeHere
