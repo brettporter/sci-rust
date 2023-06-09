@@ -180,6 +180,7 @@ enum Register {
     String(usize),
     // TODO: include heap pointers?
     Undefined,
+    Address(u16, usize),
 }
 impl Register {
     fn to_i16(&self) -> i16 {
@@ -1078,8 +1079,8 @@ impl<'a> PMachine<'a> {
             }
             0x02 => {
                 // ScriptID
-                let script_number = params[1].to_i16();
-                let dispatch_number = if params.len() - 1 > 1 {
+                let script_number = params[1].to_u16();
+                let dispatch_number = if params.len() > 2 {
                     params[2].to_u16()
                 } else {
                     0
@@ -1089,10 +1090,13 @@ impl<'a> PMachine<'a> {
                     script_number, dispatch_number
                 );
 
-                let script = self.load_script(script_number as u16);
+                let script = self.load_script(script_number);
                 let addr = script.get_dispatch_address(dispatch_number) as usize;
-                let obj = script.get_object_by_offset(addr).unwrap();
-                return Some(Register::Object(self.initialise_object(obj).id));
+                if let Some(obj) = script.get_object_by_offset(addr) {
+                    return Some(Register::Object(self.initialise_object(obj).id));
+                } else {
+                    return Some(Register::Address(script_number, addr));
+                }
             }
             0x04 => {
                 // Clone

@@ -91,7 +91,10 @@ impl Script {
             let block_data = &data[block_offset..idx + block_size];
             idx += block_size; // includes header size
 
-            debug!("Found block type {:?} size {}", &block_type, block_size);
+            debug!(
+                "Found block type {:?} offset {:x} size {}",
+                &block_type, block_offset, block_size
+            );
             blocks.push(ScriptBlock {
                 block_type,
                 block_offset,
