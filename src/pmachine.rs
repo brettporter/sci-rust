@@ -893,6 +893,12 @@ impl<'a> PMachine<'a> {
                     debug!("load global {} to stack", var);
                     stack.push(global_vars[var as usize]);
                 }
+                0x9f => {
+                    // lspi B
+                    let var = state.read_u8() as u16 + state.ax.to_u16();
+                    debug!("load parameter {} to stack", var);
+                    stack.push(stack[state.params_pos + var as usize]);
+                }
                 0xa0 => {
                     // sag W
                     let var = state.read_u16();
@@ -937,6 +943,14 @@ impl<'a> PMachine<'a> {
                     let var = state.read_u8() as usize;
                     let idx = state.temp_pos + var;
                     let v = stack[idx].to_i16() + 1;
+                    stack[idx] = Register::Value(v);
+                    state.ax = stack[idx];
+                }
+                0xe5 => {
+                    // -at B
+                    let var = state.read_u8() as usize;
+                    let idx = state.temp_pos + var;
+                    let v = stack[idx].to_i16() - 1;
                     stack[idx] = Register::Value(v);
                     state.ax = stack[idx];
                 }
