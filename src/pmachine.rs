@@ -7,6 +7,7 @@ use log::{debug, info};
 use num_traits::FromPrimitive;
 
 use crate::{
+    events::EventManager,
     resource::{self, Resource, ResourceType},
     script::Script,
 };
@@ -326,7 +327,7 @@ impl<'a> PMachine<'a> {
         self.object_cache.insert(obj.id(), Box::new(instance))
     }
 
-    pub(crate) fn run_game_play_method(&self) {
+    pub(crate) fn run_game_play_method(&self, event_manager: &mut EventManager) {
         let game_object = self.load_game_object();
 
         let (script_number, code_offset) = game_object.get_func_selector(self.play_selector);
@@ -341,12 +342,18 @@ impl<'a> PMachine<'a> {
 
         // TODO: better to do this by execution a machine function? Not happy with passing all the info in
 
-        self.run(game_object, script_number, code_offset);
+        self.run(game_object, script_number, code_offset, event_manager);
     }
 
     // TODO: consistent debug logging through here
     // TODO: log symbols so we can more easily debug it = opcodes, variables, selectors, classes etc.
-    fn run(&self, run_obj: &ObjectInstance, run_script_number: u16, run_code_offset: u16) {
+    fn run(
+        &self,
+        run_obj: &ObjectInstance,
+        run_script_number: u16,
+        run_code_offset: u16,
+        event_manager: &mut EventManager,
+    ) {
         let s = self.load_script(run_script_number);
 
         // TODO: separate registers and stack frames, can keep some of this out of the send to selector function which is just creating a call
@@ -578,7 +585,11 @@ impl<'a> PMachine<'a> {
 
                     // todo!("Temporary - currently just setting this to quit so it doesn't infinite loop");
                     if k_func == 0x45 {
-                        global_vars[4] = Register::Value(1);
+                        if let Some(quit) = event_manager.poll() {
+                            if quit {
+                                global_vars[4] = Register::Value(1);
+                            }
+                        }
                     }
 
                     // unwind stack
@@ -1154,6 +1165,8 @@ impl<'a> PMachine<'a> {
                 let ticks = params[1].to_i16();
                 info!("Kernel> Wait ticks: {:x}", ticks);
                 const TICK_DURATION: u32 = 1_000_000_000u32 / 60;
+                // TODO: currently 0 a lot, is that correct?
+                // TODO: call back to the event handler to poll
                 ::std::thread::sleep(Duration::new(0, ticks as u32 * TICK_DURATION));
                 // TODO: set return value
             }

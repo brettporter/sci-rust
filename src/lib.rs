@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
+use events::EventManager;
 use graphics::Graphics;
 use pmachine::PMachine;
 use resource::Resource;
@@ -7,6 +8,7 @@ use resource::Resource;
 #[macro_use]
 extern crate num_derive;
 
+mod events;
 pub mod graphics;
 mod picture;
 mod pmachine;
@@ -41,14 +43,14 @@ impl Game {
 
         let mut graphics = Graphics::init(&sdl_context);
 
-        // TODO: initialise event manager
+        let mut event_manager = EventManager::init(&sdl_context);
         // TODO: initialise window manager
         // TODO: initialise text parser (vocabulary files)
         // TODO: initialise the music player
 
         let vm = PMachine::init(&self.resources);
 
-        vm.run_game_play_method();
+        vm.run_game_play_method(&mut event_manager);
 
         Ok(())
     }
