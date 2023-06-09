@@ -377,6 +377,10 @@ impl<'a> PMachine<'a> {
                     // TODO: can we simplify all the unwrapping
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() - state.ax.to_i16());
                 }
+                0x06 | 0x07 => {
+                    // mul
+                    state.ax = Register::Value(stack.pop().unwrap().to_i16() * state.ax.to_i16());
+                }
                 0x0c | 0x0d => {
                     // shr
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() >> state.ax.to_i16());
