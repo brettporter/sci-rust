@@ -1144,8 +1144,16 @@ impl<'a> PMachine<'a> {
             }
             0x0b => {
                 // Animate
+                let view_list_ptr = params.get(1); // optional
+                let cycle = params.get(2); // optional
+
+                // TODO: if background picture not drawn, animate with style from kDrawPic
+
                 info!("Kernel> Animate");
-                // TODO: get all the params, animate. No return value
+                // TODO: animate
+
+                // No return value
+                return None;
             }
             0x1c => {
                 // GetEvent
@@ -1157,7 +1165,12 @@ impl<'a> PMachine<'a> {
             }
             0x35 => {
                 // FirstNode
-                // params = DblList, return Node
+                let list_ptr = params[1];
+                if list_ptr.is_zero_or_null() {
+                    return Some(Register::Value(0));
+                }
+                info!("Kernel> FirstNode {:x}", &list_ptr.to_u16());
+                // TODO: dereference the list and get the first node
                 // todo!("currently just return 0 for empty");
                 return Some(Register::Value(0));
             }
@@ -1237,7 +1250,6 @@ impl<'a> PMachine<'a> {
 
 fn dump_stack(stack: &Vec<Register>, state: &MachineState) {
     // TODO: maybe show call stack too
-    dbg!(state.num_params, state.temp_pos, state.params_pos);
     for i in 0..stack.len() {
         // TODO: not tracking where temp ends and these are pushing new values for send
         let indent = if i == state.temp_pos {
