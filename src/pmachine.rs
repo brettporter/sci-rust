@@ -570,7 +570,6 @@ impl<'a> PMachine<'a> {
                     }
 
                     // unwind stack
-                    // TODO: do we need to do something with rest?
                     stack.truncate(stackframe_start);
                 }
                 0x45 => {
@@ -1119,6 +1118,14 @@ impl<'a> PMachine<'a> {
                 info!("Kernel> Wait ticks: {:x}", ticks);
                 // TODO: do this for kWait
                 // ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+            }
+            0x51 => {
+                // CanBeHere
+                let obj = params[1].to_obj();
+                // TODO: support optional parameter of a clip list (DblList) -- assert if the rest is working
+                info!("Kernel> Can be here: {}", obj);
+                // TODO: infinite loop unless we do this properly. For now always succeed.
+                return Some(Register::Value(1));
             }
             _ => {
                 debug!(
