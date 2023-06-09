@@ -10,7 +10,7 @@ use sdl2::{
 
 use crate::{picture, resource::Resource};
 
-pub(crate) struct Graphics {
+pub struct Graphics {
     canvas: Canvas<Window>,
 }
 impl Graphics {
@@ -18,7 +18,7 @@ impl Graphics {
     pub(crate) const VIEWPORT_WIDTH: i32 = 320;
     pub(crate) const VIEWPORT_HEIGHT: i32 = 190;
 
-    pub(crate) fn init(sdl_context: &Sdl) -> Self {
+    pub fn init(sdl_context: &Sdl) -> Self {
         // TOOD: replace expect with error handling, this can certainly fail
         let video_subsystem = sdl_context.video().expect("Unable to create SDL 2 video");
 
@@ -47,7 +47,7 @@ impl Graphics {
     // What is the right thing to pass into draw_image since I only get the texture canvas in the loop
     // But it's not super useful since it's all point drawing
     //  -- refactor all the canvas bits in picture to something I can narrow down to a simple implementation
-    pub(crate) fn render_resource(&mut self, resource: &Resource) {
+    pub fn render_resource(&mut self, resource: &Resource) {
         // TODO: better to just do the above with bytes and create the texture raw?
         // TODO: factor in menu bar -- currently full screen white, but should be white background for the picture viewport, black for the rest (when no menu bar)
         // TODO: don't necessarily want entire clear -> copy -> present logic here or if there are other steps for the current scene, currently an example

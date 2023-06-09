@@ -10,7 +10,7 @@ use decompress::CompressionType;
 mod decompress;
 
 #[derive(FromPrimitive, ToPrimitive, Debug, PartialEq)]
-pub(crate) enum ResourceType {
+pub enum ResourceType {
     View,
     Pic,
     Script,
@@ -33,7 +33,7 @@ struct ResourceMapEntry {
     resource_file_offset: u32,
 }
 
-pub(crate) struct Resource {
+pub struct Resource {
     resource_type: ResourceType,
     pub resource_number: u16,
 
@@ -156,7 +156,7 @@ pub(crate) fn load_all_resources(game_path: &Path) -> Result<HashMap<u16, Resour
     Ok(resources)
 }
 
-pub(crate) fn get_resource<'a>(
+pub fn get_resource<'a>(
     resources: &'a HashMap<u16, Resource>,
     resource_type: ResourceType,
     resource_number: u16,
