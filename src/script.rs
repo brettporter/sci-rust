@@ -219,8 +219,8 @@ impl Script {
         self.get_object(self.main_object_offset.unwrap())
     }
 
-    pub(crate) fn get_class(&self, species: u16) -> &ClassDefinition {
-        self.classes.iter().find(|&c| c.species == species).unwrap()
+    pub(crate) fn get_class(&self, species: u16) -> Option<&ClassDefinition> {
+        self.classes.iter().find(|&c| c.species == species)
     }
 
     pub(crate) fn get_object(&self, offset: usize) -> &ClassDefinition {

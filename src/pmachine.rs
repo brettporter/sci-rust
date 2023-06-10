@@ -1,4 +1,9 @@
-use std::{cell::RefCell, collections::HashMap, time::Duration};
+use std::{
+    borrow::Borrow,
+    cell::RefCell,
+    collections::{HashMap, LinkedList, VecDeque},
+    time::Duration,
+};
 
 use elsa::FrozenMap;
 use global_counter::primitive::exact::CounterUsize;
@@ -17,6 +22,8 @@ pub(crate) struct PMachine<'a> {
     class_scripts: HashMap<u16, u16>,
     play_selector: u16,
     script_cache: FrozenMap<u16, Box<Script>>,
+
+    // TODO: move to heap?
     object_cache: FrozenMap<usize, Box<ObjectInstance>>,
 }
 
@@ -26,6 +33,15 @@ enum VariableType {
     Local,
     Temporary,
     Paramter,
+}
+
+// Node key / value are object registers. Can't use register type as Copy would be infinite
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct DblListNode {
+    key: usize,
+    value: usize,
+    list_id: usize,
+    list_index: usize,
 }
 
 struct StackFrame {
@@ -44,17 +60,34 @@ struct StackFrame {
     obj: usize,
 
     // Any selectors not yet called in the last send
-    remaining_selectors: Vec<usize>,
+    remaining_selectors: VecDeque<usize>,
+}
+
+struct Heap {
+    // TODO: should we have all these "caches", or have a single Heap?
+    dbllist_cache: HashMap<usize, VecDeque<DblListNode>>,
+}
+impl Heap {
+    fn new() -> Heap {
+        Heap {
+            dbllist_cache: HashMap::new(),
+        }
+    }
+
+    fn get_dbllist(&mut self, list_ptr: usize) -> &mut VecDeque<DblListNode> {
+        self.dbllist_cache.get_mut(&list_ptr).unwrap()
+    }
 }
 
 // TODO: remove lifecycle by owning the bits of object instance needed for state
 // and looking up the rest when used
-struct MachineState<'a> {
+// TODO: probably separate the registers from the heap but don't want to pass too many things around
+struct MachineState {
     ip: usize, // instruction pointer
     // TODO: should this just be current_obj data and ip offset modified?
     // Don't need code stored here as we can look it up from the script
     code: Box<Vec<u8>>, // currently executing script data
-    current_obj: &'a ObjectInstance,
+    current_obj: usize,
     ax: Register,
 
     // Stack information
@@ -65,7 +98,8 @@ struct MachineState<'a> {
     rest_modifier: usize,
     script: u16,
 }
-impl MachineState<'_> {
+
+impl MachineState {
     fn read_u8(&mut self) -> u8 {
         let v = self.code[self.ip];
         self.ip += 1;
@@ -109,13 +143,13 @@ impl MachineState<'_> {
 enum ObjectType {
     Object,
     Clone = 1,
-    Unknown_4 = 4, // TODO: not sure what this represents yeet
     Class = 0x8000,
 }
 
 // Counter for clones. Starting value ensures no overlap with existing IDs
 // Note: because we are cloning an event every tick this will grow fast, but we have more than enough space in a usize
 static CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
+static DBLLIST_COUNTER: CounterUsize = CounterUsize::new(0);
 
 #[derive(Debug)]
 struct ObjectInstance {
@@ -190,6 +224,8 @@ enum Register {
     Variable(VariableType, i16),
     String(usize),
     Address(u16, usize),
+    DblList(usize),
+    Node(DblListNode),
     Undefined,
 }
 impl Register {
@@ -206,6 +242,26 @@ impl Register {
             _ => panic!("Register was not an object {:?}", self),
         }
     }
+    fn is_obj(&self) -> bool {
+        match *self {
+            Register::Object(_) => true,
+            _ => false,
+        }
+    }
+
+    fn to_dbllist(&self) -> usize {
+        match *self {
+            Register::DblList(v) => v,
+            _ => panic!("Register was not a dbllist {:?}", self),
+        }
+    }
+
+    fn to_node(&self) -> DblListNode {
+        match *self {
+            Register::Node(n) => n,
+            _ => panic!("Register was not a node {:?}", self),
+        }
+    }
 
     fn to_u16(&self) -> u16 {
         let v = self.to_i16();
@@ -216,7 +272,8 @@ impl Register {
     fn is_zero_or_null(&self) -> bool {
         match *self {
             Register::Value(v) => v == 0,
-            Register::Object(v) => v == 0,
+            Register::DblList(v) | Register::Object(v) => v == 0,
+            Register::Node(_) => false, // Nodes can be checked against null but are never null (in that case a Value(0) was returned instead) -- TODO: do we make it nullable somehow instead?
             _ => panic!("Register {:?} doesn't have a zero value", *self),
         }
     }
@@ -287,7 +344,7 @@ impl<'a> PMachine<'a> {
 
     fn load_game_object(&self) -> &ObjectInstance {
         // load the play method from the game object (at exports[0]) in script 000
-        let init_script = self.load_script(SCRIPT_MAIN);
+        let init_script = self.load_script(SCRIPT_MAIN).unwrap();
 
         self.initialise_object(init_script.get_main_object())
     }
@@ -310,7 +367,7 @@ impl<'a> PMachine<'a> {
             id: obj.id(),
             name: String::from(&obj.name),
             species: obj.species,
-            object_type: FromPrimitive::from_u16(obj.info).unwrap(),
+            object_type: FromPrimitive::from_u16(obj.info & !0x4).unwrap(), // TODO: what does the 0x4 represent?
             variables: RefCell::new(
                 obj.variables
                     .iter()
@@ -331,52 +388,52 @@ impl<'a> PMachine<'a> {
     pub(crate) fn run_game_play_method(&self, event_manager: &mut EventManager) {
         let game_object = self.load_game_object();
 
-        let (script_number, code_offset) = game_object.get_func_selector(self.play_selector);
-
-        debug!(
-            "Found play {} with code offset {:x?} in script {}",
-            self.play_selector, code_offset, script_number
-        );
-
-        // This becomes the main loop
-        // todo!("pass in event handling to be able to handle events and quit")
-
-        // TODO: better to do this by execution a machine function? Not happy with passing all the info in
-
-        self.run(game_object, script_number, code_offset, event_manager);
+        self.run(game_object, self.play_selector, event_manager);
     }
 
     // TODO: consistent debug logging through here
     // TODO: log symbols so we can more easily debug it = opcodes, variables, selectors, classes etc.
-    fn run(
-        &self,
-        run_obj: &ObjectInstance,
-        run_script_number: u16,
-        run_code_offset: u16,
-        event_manager: &mut EventManager,
-    ) {
-        let s = self.load_script(run_script_number);
+    fn run(&self, run_object: &ObjectInstance, selector: u16, event_manager: &mut EventManager) {
+        let mut stack: Vec<Register> = Vec::new();
 
+        let mut call_stack: Vec<StackFrame> = Vec::new();
+
+        let (script_number, code_offset) = run_object.get_func_selector(selector);
+
+        debug!(
+            "Found selector {} with code offset {:x?} in script {}",
+            selector, code_offset, script_number
+        );
+
+        // TODO: better to do this by execution a machine function? Not happy with passing all the info in
         // TODO: separate registers and stack frames, can keep some of this out of the send to selector function which is just creating a call
+        let s = self.load_script(script_number).unwrap();
+
         let mut state = MachineState {
             code: s.data.clone(), // TODO: remove clone
-            ip: run_code_offset as usize,
-            current_obj: run_obj,
+            ip: code_offset as usize,
+            current_obj: run_object.id,
             ax: Register::Undefined,
             params_pos: 0,
             num_params: 0,
             temp_pos: 0,
             rest_modifier: 0,
-            script: run_script_number,
+            script: script_number,
         };
 
-        let mut stack: Vec<Register> = Vec::new();
+        let mut heap = Heap::new();
 
-        let mut call_stack: Vec<StackFrame> = Vec::new();
+        // Pre-load objects for all classes to avoid lazy init problems
+        for class_num in self.class_scripts.keys() {
+            if let Some(def) = self.get_class_definition(*class_num) {
+                self.initialise_object(def);
+            }
+        }
 
         // TODO: get variables from all loaded scripts, rather than loading again
         let mut global_vars: Vec<Register> = self
             .load_script(SCRIPT_MAIN)
+            .unwrap()
             .variables
             .borrow()
             .iter()
@@ -421,7 +478,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x18 | 0x19 => {
                     // not
-                    state.ax = Register::Value(if state.ax.to_i16() == 0 { 1 } else { 0 });
+                    state.ax = Register::Value(if state.ax.is_zero_or_null() { 1 } else { 0 });
                 }
                 0x1a | 0x1b => {
                     // eq?
@@ -554,8 +611,8 @@ impl<'a> PMachine<'a> {
                         stack_len: stackframe_end,
                         script_number: state.script,
                         ip: state.ip,
-                        obj: state.current_obj.id,
-                        remaining_selectors: Vec::new(),
+                        obj: state.current_obj,
+                        remaining_selectors: VecDeque::new(),
                     });
 
                     // As opposed to send, does not start with selector
@@ -579,8 +636,10 @@ impl<'a> PMachine<'a> {
                     let num_params = params[0].to_i16();
                     assert_eq!(num_params, k_params as i16);
 
+                    // dump_stack(&stack, &state);
+
                     // call command, put return value into ax
-                    if let Some(value) = self.call_kernel_command(k_func, params) {
+                    if let Some(value) = self.call_kernel_command(&mut heap, k_func, params) {
                         state.ax = value;
                     }
 
@@ -636,11 +695,11 @@ impl<'a> PMachine<'a> {
                         frame.script_number, frame.ip
                     );
 
-                    let previous_obj = state.current_obj;
-                    let script = self.load_script(frame.script_number);
+                    let previous_obj = self.get_object(state.current_obj);
+                    let script = self.load_script(frame.script_number).unwrap();
                     state.update_script(script);
                     state.ip = frame.ip;
-                    state.current_obj = self.object_cache.get(&frame.obj).unwrap();
+                    state.current_obj = frame.obj;
 
                     state.params_pos = frame.params_pos;
                     state.temp_pos = frame.temp_pos;
@@ -652,11 +711,14 @@ impl<'a> PMachine<'a> {
                     let remaining_selectors = &mut frame.remaining_selectors.clone(); // TODO: is clone needed?
                     while !remaining_selectors.is_empty() {
                         let obj = previous_obj;
-                        let start = frame.unwind_pos + remaining_selectors.pop().unwrap();
+                        let start = frame.unwind_pos + remaining_selectors.pop_front().unwrap();
                         let end = stack.len();
                         let selector = stack[start].to_u16();
                         let pos = start + 1;
                         let np = stack[pos].to_u16();
+
+                        // dump_stack(&stack, &state);
+
                         if let Some(frame) = self.send_to_selector(
                             &mut state,
                             &stack[pos..=pos + np as usize],
@@ -669,7 +731,7 @@ impl<'a> PMachine<'a> {
                             pos,
                             remaining_selectors.clone(), // TODO: is clone needed again?
                         ) {
-                            state.current_obj = obj;
+                            state.current_obj = obj.id;
                             call_stack.push(frame);
                             running_function = true;
                             break;
@@ -682,19 +744,18 @@ impl<'a> PMachine<'a> {
                 }
                 0x4a | 0x4b | 0x54 | 0x55 | 0x57 => {
                     // TODO: factor out a method and make this separate again. Curently hard with local variables in here.
+                    let current_obj = self.get_object(state.current_obj);
                     let (obj, send_obj) = if cmd == 0x54 || cmd == 0x55 {
                         // self B selector
-                        (state.current_obj, state.current_obj)
+                        (current_obj, current_obj)
                     } else if cmd == 0x57 {
                         // super B class B stackframe
                         let class_num = state.read_u8() as u16;
-                        (
-                            state.current_obj,
-                            self.initialise_object_from_class(class_num),
-                        )
+                        let class = self.get_class_definition(class_num).unwrap();
+                        (current_obj, self.get_object(class.id()))
                     } else {
                         // send B
-                        let obj = self.object_cache.get(&state.ax.to_obj()).unwrap();
+                        let obj = self.get_object(state.ax.to_obj());
                         (obj, obj)
                     };
 
@@ -709,10 +770,10 @@ impl<'a> PMachine<'a> {
                     // dump_stack(&stack, &state);
 
                     let mut read_selectors_idx = 0;
-                    let mut selector_offsets = Vec::new();
+                    let mut selector_offsets = VecDeque::new();
                     while read_selectors_idx < stackframe_end - stackframe_start {
                         let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
-                        selector_offsets.push(read_selectors_idx);
+                        selector_offsets.push_back(read_selectors_idx);
                         read_selectors_idx += np as usize + 2 + state.rest_modifier;
                         if state.rest_modifier > 0 {
                             // Only support rest modifier for one selector, otherwise behaviour is undefined
@@ -724,13 +785,11 @@ impl<'a> PMachine<'a> {
                     }
 
                     debug!(
-                        "Sending to {} selectors for {} to {}",
-                        selector_offsets.len(),
-                        obj.name,
-                        send_obj.name
+                        "Sending to selectors {:?} for {} to {}",
+                        selector_offsets, obj.name, send_obj.name
                     );
                     while !selector_offsets.is_empty() {
-                        let start = stackframe_start + selector_offsets.pop().unwrap();
+                        let start = stackframe_start + selector_offsets.pop_front().unwrap();
                         let selector = stack[start].to_u16();
                         let pos = start + 1;
                         let np = stack[pos].to_u16();
@@ -746,7 +805,7 @@ impl<'a> PMachine<'a> {
                             pos,
                             selector_offsets.clone(), // TODO: is clone needed?
                         ) {
-                            state.current_obj = obj;
+                            state.current_obj = obj.id;
                             call_stack.push(frame);
                             break;
                         }
@@ -759,7 +818,8 @@ impl<'a> PMachine<'a> {
                 0x51 => {
                     // class B
                     let class_num = state.read_u8() as u16;
-                    let obj = self.initialise_object_from_class(class_num);
+                    let class = self.get_class_definition(class_num).unwrap();
+                    let obj = self.get_object(class.id());
 
                     // TODO: do we need to change script?
                     state.ax = Register::Object(obj.id);
@@ -793,39 +853,42 @@ impl<'a> PMachine<'a> {
                 }
                 0x5c | 0x5d => {
                     // selfID
-                    state.ax = Register::Object(state.current_obj.id);
+                    state.ax = Register::Object(state.current_obj);
                 }
                 0x63 => {
                     // pToa B offset
                     let offset = state.read_u8();
-                    debug!(
-                        "property @offset {offset} to acc for {}",
-                        state.current_obj.id
-                    );
-                    state.ax = state.current_obj.get_property_by_offset(offset);
+                    debug!("property @offset {offset} to acc for {}", state.current_obj);
+                    state.ax = self
+                        .get_object(state.current_obj)
+                        .get_property_by_offset(offset);
                 }
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
-                    debug!(
-                        "acc to property @offset {offset} for {}",
-                        state.current_obj.id
-                    );
-                    state.current_obj.set_property_by_offset(offset, state.ax);
+                    debug!("acc to property @offset {offset} for {}", state.current_obj);
+                    self.get_object(state.current_obj)
+                        .set_property_by_offset(offset, state.ax);
                 }
                 0x67 => {
                     // pTos B offset
                     let offset = state.read_u8();
                     debug!("property @offset {offset} to stack");
-                    stack.push(state.current_obj.get_property_by_offset(offset));
+                    stack.push(
+                        self.get_object(state.current_obj)
+                            .get_property_by_offset(offset),
+                    );
                 }
                 0x6b => {
                     // ipToa B offset
                     let offset = state.read_u8();
                     debug!("increment property @offset {offset} to acc");
-                    state.ax = state.current_obj.get_property_by_offset(offset);
+                    state.ax = self
+                        .get_object(state.current_obj)
+                        .get_property_by_offset(offset);
                     state.ax.add(1);
-                    state.current_obj.set_property_by_offset(offset, state.ax);
+                    self.get_object(state.current_obj)
+                        .set_property_by_offset(offset, state.ax);
                 }
                 0x72 => {
                     // lofsa W
@@ -836,7 +899,7 @@ impl<'a> PMachine<'a> {
                     // Need to check what it is at this address
                     // TODO: can we generalise what the script gives back by a type?
                     let v = (state.ip as i16 + offset) as usize;
-                    let script = self.load_script(state.script);
+                    let script = self.load_script(state.script).unwrap();
                     state.ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
@@ -863,7 +926,7 @@ impl<'a> PMachine<'a> {
                 }
                 0x7c => {
                     // pushSelf
-                    stack.push(Register::Object(state.current_obj.id));
+                    stack.push(Register::Object(state.current_obj));
                 }
                 // TODO: generalise this to all types 0x80..0xff
                 0x81 => {
@@ -893,6 +956,16 @@ impl<'a> PMachine<'a> {
                     let var = state.read_u8() as usize;
                     debug!("load global {} to stack", var);
                     stack.push(global_vars[var]);
+                }
+                0x8b => {
+                    // lsl B
+                    let var = state.read_u8();
+                    debug!("load local {} to stack", var);
+                    // TODO: local variable boilerplate could be reduced, can they have a pointer in the state somewhere like data?
+                    let script = self.load_script(state.script).unwrap();
+                    stack.push(Register::Value(
+                        script.variables.borrow()[var as usize] as i16,
+                    ));
                 }
                 0x8d => {
                     // lst B
@@ -946,7 +1019,7 @@ impl<'a> PMachine<'a> {
                     // sal B
                     let var = state.read_u8();
                     debug!("store accumulator to local {}", var);
-                    let script = self.load_script(state.script);
+                    let script = self.load_script(state.script).unwrap();
                     script.variables.borrow_mut()[var as usize] = state.ax.to_u16();
                 }
                 0xa5 => {
@@ -967,6 +1040,12 @@ impl<'a> PMachine<'a> {
                     let idx = var + state.ax.to_u16();
                     debug!("store accumulator {} to global {}", state.ax.to_u16(), idx);
                     global_vars[idx as usize] = state.ax;
+                }
+                0xc1 => {
+                    // +ag B
+                    let var = state.read_u8() as usize;
+                    global_vars[var].add(1);
+                    state.ax = global_vars[var];
                 }
                 0xc5 => {
                     // +at B
@@ -993,8 +1072,8 @@ impl<'a> PMachine<'a> {
 
     fn get_inherited_var_selectors(&self, obj_class: &crate::script::ClassDefinition) -> &Vec<u16> {
         let script_num = self.class_scripts[&obj_class.super_class];
-        let script = self.load_script(script_num);
-        let super_class_def = script.get_class(obj_class.super_class);
+        let script = self.load_script(script_num).unwrap();
+        let super_class_def = script.get_class(obj_class.super_class).unwrap();
         &super_class_def.variable_selectors
     }
 
@@ -1011,9 +1090,9 @@ impl<'a> PMachine<'a> {
         if obj_class.super_class != NO_SUPER_CLASS {
             let script_num = self.class_scripts[&obj_class.super_class];
 
-            let script = self.load_script(script_num);
+            let script = self.load_script(script_num).unwrap();
 
-            let super_class_def = script.get_class(obj_class.super_class);
+            let super_class_def = script.get_class(obj_class.super_class).unwrap();
             for (k, v) in self.get_inherited_functions(super_class_def) {
                 func_selectors.entry(k).or_insert(v);
             }
@@ -1021,22 +1100,17 @@ impl<'a> PMachine<'a> {
         func_selectors
     }
 
-    fn load_script(&self, number: u16) -> &Script {
+    fn load_script(&self, number: u16) -> Option<&Script> {
         if let Some(script) = self.script_cache.get(&number) {
-            return script;
+            return Some(script);
         }
-        let script = Script::load(
-            resource::get_resource(&self.resources, ResourceType::Script, number).unwrap(),
-        );
+        let script = Script::load(resource::get_resource(
+            &self.resources,
+            ResourceType::Script,
+            number,
+        )?);
 
-        self.script_cache.insert(number, Box::new(script))
-    }
-
-    fn initialise_object_from_class(&self, class_num: u16) -> &ObjectInstance {
-        let script_number = self.class_scripts[&class_num];
-        let script = self.load_script(script_number);
-        let class = script.get_class(class_num);
-        self.initialise_object(class)
+        Some(self.script_cache.insert(number, Box::new(script)))
     }
 
     fn send_to_selector(
@@ -1051,7 +1125,7 @@ impl<'a> PMachine<'a> {
         stackframe_start: usize,
         stackframe_end: usize,
         params_pos: usize,
-        selector_offsets: Vec<usize>,
+        selector_offsets: VecDeque<usize>,
     ) -> Option<StackFrame> {
         if obj.has_var_selector(selector) {
             // Variable
@@ -1086,11 +1160,11 @@ impl<'a> PMachine<'a> {
                 stack_len: stackframe_end,
                 script_number: state.script,
                 ip: state.ip,
-                obj: state.current_obj.id,
+                obj: state.current_obj,
                 remaining_selectors: selector_offsets,
             };
 
-            let script = self.load_script(script_number);
+            let script = self.load_script(script_number).unwrap();
             state.update_script(script);
             state.ip = code_offset as usize;
 
@@ -1101,14 +1175,20 @@ impl<'a> PMachine<'a> {
         }
     }
 
-    fn call_kernel_command(&self, kernel_function: u8, params: &[Register]) -> Option<Register> {
-        match kernel_function {
+    fn call_kernel_command(
+        &self,
+        heap: &mut Heap,
+        kernel_function: u8,
+        params: &[Register],
+    ) -> Option<Register> {
+        return match kernel_function {
             0x00 => {
                 // Load
                 let res_type = params[1].to_i16() & 0x7F;
                 let res_num = params[2].to_i16();
                 info!("Kernel> Load res_type: {}, res_num: {}", res_type, res_num);
-                // TODO: load it and put a "pointer" into ax -- how is it used?
+                // todo!(): load it and put a "pointer" into ax -- how is it used?
+                None
             }
             0x02 => {
                 // ScriptID
@@ -1123,56 +1203,243 @@ impl<'a> PMachine<'a> {
                     script_number, dispatch_number
                 );
 
-                let script = self.load_script(script_number);
+                let script = self.load_script(script_number).unwrap();
                 let addr = script.get_dispatch_address(dispatch_number) as usize;
                 if let Some(obj) = script.get_object_by_offset(addr) {
-                    return Some(Register::Object(self.initialise_object(obj).id));
+                    Some(Register::Object(self.initialise_object(obj).id))
                 } else {
-                    return Some(Register::Address(script_number, addr));
+                    Some(Register::Address(script_number, addr))
                 }
+            }
+            0x03 => {
+                // DisposeScript
+                // TODO: do we bother?
+                let script_number = params[1].to_i16();
+                info!("Kernel> Dispose script {}", script_number);
+                None
             }
             0x04 => {
                 // Clone
-                // TODO: wrap all the direct uses of object_cache
-                let obj = self.object_cache.get(&params[1].to_obj()).unwrap();
-                let clone = obj.kernel_clone();
-                let id = clone.id;
+                // TODO: wrap all the direct uses of object_cache and dbllist_cache
+                let obj = self.get_object(params[1].to_obj());
+                let id = self.clone_object(obj);
                 info!("Kernel> Clone obj: {} to {id}", obj.name);
-                assert!(self.object_cache.get(&id).is_none());
-                self.object_cache.insert(id, clone);
-                return Some(Register::Object(id));
+                Some(Register::Object(id))
+            }
+            0x05 => {
+                // DisposeClone
+                let id = params[1].to_obj();
+                info!("Kernel> Dispose Clone obj: {id}");
+                self.dispose_clone(id);
+                None
+            }
+            0x06 => {
+                // IsObject
+                let is_obj = params[1].is_obj();
+                info!("Kernel> IsObject {:?} = {}", params[1], is_obj);
+                Some(Register::Value(if is_obj { 1 } else { 0 }))
+            }
+            0x08 => {
+                // DrawPic
+                info!("Kernel> DrawPic");
+                // TODO: implement this
+                None
             }
             0x0b => {
                 // Animate
+                // TODO: set view list to 0 (null) if not given
+                // TODO: cycle should be boolean, set to false if not given
                 let view_list_ptr = params.get(1); // optional
                 let cycle = params.get(2); // optional
 
                 // TODO: if background picture not drawn, animate with style from kDrawPic
-
                 info!("Kernel> Animate");
                 // TODO: animate
 
                 // No return value
-                return None;
+                None
             }
             0x1c => {
                 // GetEvent
                 let flags = params[1].to_i16();
-                let event = self.object_cache.get(&params[2].to_obj()).unwrap();
+                let event = self.get_object(params[2].to_obj());
                 info!("Kernel> GetEvent flags: {:x}, event: {}", flags, event.name);
                 // TODO: check the events, but for now just return null event
-                return Some(Register::Value(0));
+                Some(Register::Value(0))
+            }
+            0x20 => {
+                // DrawMenuBar
+                let mode = params[1].to_i16();
+                info!("Kernel> Draw menu bar mode: {mode}");
+                // TODO: draw it
+                None
+            }
+            0x22 => {
+                // AddMenu
+                info!("Kernel> AddMenu");
+                // TODO: add menu
+                None
+            }
+            0x26 => {
+                // SetSynonyms
+                info!("Kernel> SetSynonyms");
+                // TODO: set synonyms
+                None
+            }
+            0x27 => {
+                // HaveMouse
+                info!("Kernel> HaveMouse");
+                // TODO: add support for mouse
+                Some(Register::Value(0))
+            }
+            0x28 => {
+                // SetCursor
+                let resource = params[1].to_u16();
+                let visible = !params[2].is_zero_or_null();
+                let (y, x) = (params.get(3), params.get(4)); // optional
+                info!(
+                    "Kernel> SetCursor {:x} {} ({:?}, {:?})",
+                    resource, visible, x, y
+                );
+
+                // TODO: move/show/hide/change the cursor
+
+                None
+            }
+            0x30 => {
+                // GameIsRestarting
+                info!("Kernel> Game is restarting?");
+                // TODO: handle when it is
+                Some(Register::Value(0))
+            }
+            0x31 => {
+                // DoSound
+                info!("Kernel> Do sound");
+                // TODO: complicated subset based on action - for now just return 0
+                Some(Register::Value(0))
+            }
+            0x32 => {
+                // NewList
+                info!("Kernel> NewList");
+                let id = DBLLIST_COUNTER.inc();
+
+                // Using VecDeque because we can't access the underlying prev/next of a node in LinkedList anyway
+                // So we'll do this by searching and indexing even if that is O(n)
+                heap.dbllist_cache.insert(id, VecDeque::new());
+                Some(Register::DblList(id))
+            }
+            0x33 => {
+                // DisposeList
+                let list_ptr = params[1].to_dbllist();
+                info!("Kernel> DisposeList {}", list_ptr);
+                heap.dbllist_cache.remove(&list_ptr);
+                None
+            }
+            0x34 => {
+                // NewNode
+                let value = params[1].to_obj();
+                let key = params[2].to_obj();
+                info!("Kernel> NewNode v: {:x} k: {:x}", value, key);
+                Some(Register::Node(DblListNode {
+                    key,
+                    value,
+                    // TODO: this is gross, can we do better with links?
+                    list_id: 0,
+                    list_index: 0,
+                }))
             }
             0x35 => {
                 // FirstNode
-                let list_ptr = params[1];
-                if list_ptr.is_zero_or_null() {
+                let list_ptr = params[1].to_dbllist();
+                if list_ptr == 0 {
                     return Some(Register::Value(0));
                 }
-                info!("Kernel> FirstNode {:x}", &list_ptr.to_u16());
-                // TODO: dereference the list and get the first node
-                // todo!("currently just return 0 for empty");
-                return Some(Register::Value(0));
+                info!("Kernel> FirstNode {:x}", list_ptr);
+                let list = heap.dbllist_cache.get(&list_ptr).unwrap();
+
+                if let Some(&first_node) = list.front() {
+                    Some(Register::Node(first_node))
+                } else {
+                    Some(Register::Value(0))
+                }
+            }
+            0x38 => {
+                // NextNode
+                let node = params[1].to_node();
+                info!("Kernel> NextNode {:?}", node);
+
+                let list = heap.dbllist_cache.get(&node.list_id).unwrap();
+                if let Some(&n) = list.get(node.list_index + 1) {
+                    Some(Register::Node(n))
+                } else {
+                    Some(Register::Value(0))
+                }
+            }
+            0x3a => {
+                // NodeValue
+                let node = params[1].to_node();
+                info!("Kernel> NodeValue {:?}", node);
+                Some(Register::Object(node.value))
+            }
+            0x3c => {
+                // AddToFront
+                let list_ptr = params[1].to_dbllist();
+                if list_ptr == 0 {
+                    return Some(Register::Value(0));
+                }
+                // Update the list information
+                let node = DblListNode {
+                    list_id: list_ptr,
+                    list_index: 0,
+                    ..params[2].to_node()
+                };
+                info!("Kernel> AddToFront {:x} {:?}", list_ptr, node);
+
+                let list = heap.get_dbllist(list_ptr);
+                list.push_front(node);
+                None
+            }
+            0x3d => {
+                // AddToEnd
+                let list_ptr = params[1].to_dbllist();
+                if list_ptr == 0 {
+                    return Some(Register::Value(0));
+                }
+                let list = heap.get_dbllist(list_ptr);
+
+                // Update the list information
+                let node = DblListNode {
+                    list_id: list_ptr,
+                    list_index: list.len(),
+                    ..params[2].to_node()
+                };
+                info!("Kernel> AddToEnd {:x} {:?}", list_ptr, node);
+
+                list.push_back(node);
+                None
+            }
+            0x3e => {
+                // FindKey
+                let list_ptr = params[1].to_dbllist();
+                if list_ptr == 0 {
+                    return Some(Register::Value(0));
+                }
+                // Is keyed by an object - TODO: check if other types are also used
+                let key = params[2].to_obj();
+
+                info!("Kernel> FindKey {:x} in {:x}", key, list_ptr);
+                let list = heap.dbllist_cache.get(&list_ptr).unwrap();
+                if let Some(&node) = list.iter().find(|&n| n.key == key) {
+                    Some(Register::Node(node))
+                } else {
+                    Some(Register::Value(0))
+                }
+            }
+            0x43 => {
+                // GetAngle
+                info!("Kernel> GetAngle");
+                // TODO: implement
+                Some(Register::Value(0))
             }
             0x45 => {
                 // Wait
@@ -1180,9 +1447,27 @@ impl<'a> PMachine<'a> {
                 info!("Kernel> Wait ticks: {:x}", ticks);
                 const TICK_DURATION: u32 = 1_000_000_000u32 / 60;
                 // TODO: currently 0 a lot, is that correct?
-                // TODO: call back to the event handler to poll
                 ::std::thread::sleep(Duration::new(0, ticks as u32 * TICK_DURATION));
                 // TODO: set return value
+                Some(Register::Value(0))
+            }
+            0x46 => {
+                // GetTime
+                info!("Kernel> GetTime");
+                // TODO: implement
+                Some(Register::Value(0))
+            }
+            0x4f => {
+                // BaseSetter
+                info!("Kernel> BaseSetter");
+                // TODO implement
+                None
+            }
+            0x50 => {
+                // DirLoop
+                info!("Kernel> DirLoop");
+                // TODO implement
+                None
             }
             0x51 => {
                 // CanBeHere
@@ -1192,17 +1477,53 @@ impl<'a> PMachine<'a> {
                 // TODO: infinite loop unless we do this properly. For now always succeed.
                 return Some(Register::Value(1));
             }
+            0x53 => {
+                // InitBresen
+                info!("Kernel> InitBresen");
+                // TODO implement
+                None
+            }
+            0x60 => {
+                // SetMenu
+                info!("Kernel> SetMenu");
+                // TODO
+                None
+            }
+            0x62 => {
+                // GetCWD
+                let address = params[1];
+                info!("Kernel> GetCWD into {:?}", address);
+                // TODO: write a string to the address
+                return Some(address);
+            }
+            0x68 => {
+                // GetSaveDir
+                info!("Kernel> GetSaveDir");
+                // TODO: return a string
+                Some(Register::Undefined)
+            }
+            0x6b => {
+                // FlushResources
+                info!("Kernel> FlushResources");
+                // TODO: implement
+                Some(Register::Value(0))
+            }
+            0x70 => {
+                // Graph
+                info!("Kernel> Graph");
+                // TODO: implement
+                Some(Register::Value(0))
+            }
             _ => {
                 debug!(
                     "Call kernel command {:x} with #params {:?}",
                     kernel_function, params
                 );
-                // todo!("Implement missing kernel command");
+                todo!("Implement missing kernel command {:x}", kernel_function);
                 // TODO: temp assuming it returns a value
-                return Some(Register::Value(0));
+                Some(Register::Value(0))
             }
-        }
-        return None;
+        };
     }
 
     fn call_dispatch_index(
@@ -1231,20 +1552,41 @@ impl<'a> PMachine<'a> {
             stack_len: stack.len(),
             script_number: state.script,
             ip: state.ip,
-            obj: state.current_obj.id,
-            remaining_selectors: Vec::new(),
+            obj: state.current_obj,
+            remaining_selectors: VecDeque::new(),
         });
 
         // As opposed to send, does not start with selector
         state.num_params = stack[stackframe_start].to_u16();
 
         // Switch to script
-        let script = self.load_script(script_num);
+        let script = self.load_script(script_num).unwrap();
         state.update_script(script);
         state.ip = script.get_dispatch_address(dispatch_index) as usize;
 
         state.params_pos = stackframe_start; // argc is included
         state.temp_pos = stackframe_end;
+    }
+
+    fn get_object(&self, id: usize) -> &ObjectInstance {
+        self.object_cache.get(&id).unwrap()
+    }
+
+    fn clone_object(&self, obj: &ObjectInstance) -> usize {
+        let clone = obj.kernel_clone();
+        assert!(self.object_cache.get(&clone.id).is_none());
+        self.object_cache.insert(clone.id, clone).id
+    }
+
+    fn dispose_clone(&self, id: usize) {
+        // todo!(): stuck on mutability here
+        // self.object_cache.as_mut().remove(&id);
+    }
+
+    fn get_class_definition(&self, class_num: u16) -> Option<&crate::script::ClassDefinition> {
+        let script_number = self.class_scripts[&class_num];
+        let script = self.load_script(script_number)?;
+        script.get_class(class_num)
     }
 }
 
