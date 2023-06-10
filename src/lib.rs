@@ -50,7 +50,7 @@ impl Game {
 
         let vm = PMachine::init(&self.resources);
 
-        vm.run_game_play_method(&mut event_manager);
+        vm.run_game_play_method(&mut graphics, &mut event_manager);
 
         Ok(())
     }

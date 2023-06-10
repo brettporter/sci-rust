@@ -1,7 +1,6 @@
 use std::{
-    borrow::Borrow,
     cell::RefCell,
-    collections::{HashMap, LinkedList, VecDeque},
+    collections::{HashMap, VecDeque},
     time::Duration,
 };
 
@@ -13,6 +12,7 @@ use num_traits::FromPrimitive;
 
 use crate::{
     events::EventManager,
+    graphics::Graphics,
     resource::{self, Resource, ResourceType},
     script::Script,
 };
@@ -385,15 +385,26 @@ impl<'a> PMachine<'a> {
         self.object_cache.insert(obj.id(), Box::new(instance))
     }
 
-    pub(crate) fn run_game_play_method(&self, event_manager: &mut EventManager) {
+    pub(crate) fn run_game_play_method(
+        &self,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
+    ) {
         let game_object = self.load_game_object();
 
-        self.run(game_object, self.play_selector, event_manager);
+        self.run(game_object, self.play_selector, graphics, event_manager);
     }
 
     // TODO: consistent debug logging through here
     // TODO: log symbols so we can more easily debug it = opcodes, variables, selectors, classes etc.
-    fn run(&self, run_object: &ObjectInstance, selector: u16, event_manager: &mut EventManager) {
+    // TODO: we could use a separate kernel from the VM that has access to the services (graphics, events) but for now all in here
+    fn run(
+        &self,
+        run_object: &ObjectInstance,
+        selector: u16,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
+    ) {
         let mut stack: Vec<Register> = Vec::new();
 
         let mut call_stack: Vec<StackFrame> = Vec::new();
@@ -639,7 +650,9 @@ impl<'a> PMachine<'a> {
                     // dump_stack(&stack, &state);
 
                     // call command, put return value into ax
-                    if let Some(value) = self.call_kernel_command(&mut heap, k_func, params) {
+                    if let Some(value) =
+                        self.call_kernel_command(&mut heap, graphics, k_func, params)
+                    {
                         state.ax = value;
                     }
 
@@ -1178,6 +1191,7 @@ impl<'a> PMachine<'a> {
     fn call_kernel_command(
         &self,
         heap: &mut Heap,
+        graphics: &mut Graphics, // TODO: avoid passing this around...
         kernel_function: u8,
         params: &[Register],
     ) -> Option<Register> {
@@ -1241,7 +1255,26 @@ impl<'a> PMachine<'a> {
             }
             0x08 => {
                 // DrawPic
-                info!("Kernel> DrawPic");
+                let pic_number = params[1].to_u16();
+                let animation = params[2].to_i16(); // TODO: make optional
+                let flags = params[3].to_i16(); // TODO: make optional
+                let default_palette = params[4].to_i16(); // TODO: make optional
+
+                info!(
+                    "Kernel> DrawPic pic: {} animation: {} flags: {} default_palette: {}",
+                    pic_number, animation, flags, default_palette
+                );
+
+                // TODO: handle different animations. Currently just show instantly
+                // TODO: handle flags - determines whether to clear or not
+                // TODO: handle default palette
+
+                // TODO: suggestion that it should be drawn to the "background" and use animate to bring it to the foreground
+
+                let resource =
+                    resource::get_resource(&self.resources, ResourceType::Pic, pic_number).unwrap();
+                graphics.render_resource(resource);
+
                 // TODO: implement this
                 None
             }
