@@ -280,6 +280,17 @@ impl Register {
         }
     }
 
+    fn add_reg(&mut self, inc: Register) {
+        *self = match *self {
+            Register::Value(v) => match inc {
+                Register::Value(v2) => Register::Value(v + v2),
+                Register::String(v2) => dbg!(Register::String(v2 + v as usize)),
+                _ => panic!("Second register was not able to be added {:?}", inc),
+            },
+            _ => panic!("Register was not a value {:?}", self),
+        }
+    }
+
     fn add(&mut self, inc: i16) {
         *self = match *self {
             Register::Value(v) => Register::Value(v + inc),
@@ -467,7 +478,7 @@ impl<'a> PMachine<'a> {
             match cmd {
                 0x02 | 0x03 => {
                     // add
-                    state.ax.add(stack.pop().unwrap().to_i16());
+                    state.ax.add_reg(stack.pop().unwrap());
                 }
                 0x04 | 0x05 => {
                     // sub
