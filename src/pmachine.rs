@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use elsa::FrozenMap;
@@ -25,6 +25,8 @@ pub(crate) struct PMachine<'a> {
 
     // TODO: move to heap?
     object_cache: FrozenMap<usize, Box<ObjectInstance>>,
+
+    start_time: Instant,
 }
 
 #[derive(FromPrimitive, Copy, Clone, Debug, PartialEq)]
@@ -339,6 +341,7 @@ impl<'a> PMachine<'a> {
             play_selector,
             script_cache: FrozenMap::new(),
             object_cache: FrozenMap::new(),
+            start_time: Instant::now(),
         }
     }
 
@@ -1280,14 +1283,28 @@ impl<'a> PMachine<'a> {
             }
             0x0b => {
                 // Animate
-                // TODO: set view list to 0 (null) if not given
-                // TODO: cycle should be boolean, set to false if not given
-                let view_list_ptr = params.get(1); // optional
-                let cycle = params.get(2); // optional
+                let list_ptr = params.get(1).unwrap_or(&Register::Value(0)); // optional
+                let cycle = params.get(2).unwrap_or(&Register::Value(0)).to_i16() != 0; // optional
+
+                if list_ptr.is_zero_or_null() {
+                    // TODO: what behaviour should there be if list is not given?
+                    return None;
+                }
 
                 // TODO: if background picture not drawn, animate with style from kDrawPic
-                info!("Kernel> Animate");
-                // TODO: animate
+                info!("Kernel> Animate cast: {:?} cycle: {:?}", list_ptr, cycle);
+
+                let cast = heap.dbllist_cache.get(&list_ptr.to_dbllist()).unwrap();
+
+                // TODO: map to objects?
+                for c in cast {
+                    let o = self.get_object(c.value);
+                    debug!("{:?}", o);
+                }
+
+                // TODO: call doit if cycle is set
+
+                // todo!("animate");
 
                 // No return value
                 None
@@ -1486,9 +1503,19 @@ impl<'a> PMachine<'a> {
             }
             0x46 => {
                 // GetTime
-                info!("Kernel> GetTime");
-                // TODO: implement
-                Some(Register::Value(0))
+                let mode = params.len() > 1;
+                info!("Kernel> GetTime (system time?: {:?})", mode);
+
+                // TODO: what about not present
+                if !mode {
+                    // Convert millis to ticks (60 ticks/sec)
+                    let ticks = self.start_time.elapsed().as_millis() * 60 / 1000;
+                    // TODO: will defintely wrap after a few minutes, is that expected?
+                    debug!("ticks = {} -> {}", ticks, ticks as i16);
+                    Some(Register::Value(ticks as i16))
+                } else {
+                    todo!("Implement GetTime {:?}", mode);
+                }
             }
             0x4f => {
                 // BaseSetter
