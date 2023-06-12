@@ -514,6 +514,10 @@ impl<'a> PMachine<'a> {
                     // mul
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() * state.ax.to_i16());
                 }
+                0x08 | 0x09 => {
+                    // div
+                    state.ax = Register::Value(stack.pop().unwrap().to_i16() / state.ax.to_i16());
+                }
                 0x0c | 0x0d => {
                     // shr
                     state.ax = Register::Value(stack.pop().unwrap().to_i16() >> state.ax.to_i16());
