@@ -275,6 +275,13 @@ impl Register {
         v as u16
     }
 
+    fn to_string(&self) -> (Id, usize) {
+        match *self {
+            Register::String(id, offset) => (id, offset),
+            _ => panic!("Register was not a string {:?}", self),
+        }
+    }
+
     fn is_zero_or_null(&self) -> bool {
         match *self {
             Register::Value(v) => v == 0,
@@ -303,10 +310,10 @@ impl Register {
         }
     }
 
-    fn to_string(&self) -> (Id, usize) {
-        match *self {
-            Register::String(id, offset) => (id, offset),
-            _ => panic!("Register was not a string {:?}", self),
+    fn sub(&mut self, dec: i16) {
+        *self = match *self {
+            Register::Value(v) => Register::Value(v - dec),
+            _ => panic!("Register was not a value {:?}", self),
         }
     }
 }
@@ -948,6 +955,17 @@ impl<'a> PMachine<'a> {
                         .get_object(state.current_obj)
                         .get_property_by_offset(offset);
                     state.ax.add(1);
+                    self.get_object(state.current_obj)
+                        .set_property_by_offset(offset, state.ax);
+                }
+                0x6d => {
+                    // dpToa B offset
+                    let offset = state.read_u8();
+                    debug!("increment property @offset {offset} to acc");
+                    state.ax = self
+                        .get_object(state.current_obj)
+                        .get_property_by_offset(offset);
+                    state.ax.sub(1);
                     self.get_object(state.current_obj)
                         .set_property_by_offset(offset, state.ax);
                 }
