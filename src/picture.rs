@@ -5,7 +5,7 @@ use bitstream_io::{BigEndian, BitRead, BitReader};
 use num_traits::FromPrimitive;
 
 use crate::{
-    graphics::{Graphics, GraphicsContext},
+    graphics::{Colour, Graphics, GraphicsContext},
     resource::Resource,
 };
 
@@ -66,41 +66,6 @@ impl Point {
     }
 }
 
-#[derive(Clone)]
-struct Colour {
-    r: u8,
-    g: u8,
-    b: u8,
-}
-impl Colour {
-    // See https://en.wikipedia.org/wiki/Enhanced_Graphics_Adapter
-    const EGA_COLOURS: [[u8; 3]; 16] = [
-        [0, 0, 0],       // Black
-        [0, 0, 170],     // Blue
-        [0, 170, 0],     // Green
-        [0, 170, 170],   // Cyan
-        [170, 0, 0],     // Red
-        [170, 0, 170],   // Magenta
-        [170, 85, 0],    // Brown
-        [170, 170, 170], // Light grey
-        [85, 85, 85],    // Dark grey
-        [85, 85, 255],   // Bright blue
-        [85, 255, 85],   // Bright green
-        [85, 255, 255],  // Bright cyan
-        [255, 85, 85],   // Bright red
-        [255, 85, 255],  // Bright magenta
-        [255, 255, 85],  // Bright yellow
-        [255, 255, 255], // White
-    ];
-
-    fn from_ega(c: u8) -> Self {
-        Self {
-            r: Self::EGA_COLOURS[c as usize][0],
-            g: Self::EGA_COLOURS[c as usize][1],
-            b: Self::EGA_COLOURS[c as usize][2],
-        }
-    }
-}
 type Palette = [DitheredColour; PALETTE_SIZE];
 const PALETTE_SIZE: usize = 40;
 

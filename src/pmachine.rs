@@ -1341,7 +1341,7 @@ impl<'a> PMachine<'a> {
 
                 let resource =
                     resource::get_resource(&self.resources, ResourceType::Pic, pic_number).unwrap();
-                graphics.render_resource(resource);
+                graphics.render_picture(resource);
 
                 // TODO: implement this
                 None
@@ -1636,7 +1636,8 @@ impl<'a> PMachine<'a> {
                     let local = Local::now();
                     let t = local.hour12().1 << 12 | local.minute() << 6 | local.second();
                     debug!("time = {}", t);
-                    assert!(t < i16::MAX as u32);
+                    // This will exceed i16 but the consumers only care about if the number of seconds have changed
+                    // assert!(t < i16::MAX as u32);
                     Some(Register::Value(t as i16))
                 }
             }

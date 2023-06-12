@@ -14,6 +14,7 @@ mod picture;
 mod pmachine;
 pub mod resource;
 mod script;
+pub mod view;
 
 pub struct Game {
     pub resources: HashMap<u16, Resource>,

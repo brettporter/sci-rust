@@ -8,7 +8,47 @@ use sdl2::{
     Sdl,
 };
 
-use crate::{picture, resource::Resource};
+use crate::{
+    picture,
+    resource::Resource,
+    view::{self, View},
+};
+
+#[derive(Clone)]
+pub(crate) struct Colour {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+impl Colour {
+    // See https://en.wikipedia.org/wiki/Enhanced_Graphics_Adapter
+    const EGA_COLOURS: [[u8; 3]; 16] = [
+        [0, 0, 0],       // Black
+        [0, 0, 170],     // Blue
+        [0, 170, 0],     // Green
+        [0, 170, 170],   // Cyan
+        [170, 0, 0],     // Red
+        [170, 0, 170],   // Magenta
+        [170, 85, 0],    // Brown
+        [170, 170, 170], // Light grey
+        [85, 85, 85],    // Dark grey
+        [85, 85, 255],   // Bright blue
+        [85, 255, 85],   // Bright green
+        [85, 255, 255],  // Bright cyan
+        [255, 85, 85],   // Bright red
+        [255, 85, 255],  // Bright magenta
+        [255, 255, 85],  // Bright yellow
+        [255, 255, 255], // White
+    ];
+
+    pub(crate) fn from_ega(c: u8) -> Self {
+        Self {
+            r: Self::EGA_COLOURS[c as usize][0],
+            g: Self::EGA_COLOURS[c as usize][1],
+            b: Self::EGA_COLOURS[c as usize][2],
+        }
+    }
+}
 
 pub struct Graphics {
     canvas: Canvas<Window>,
@@ -47,7 +87,7 @@ impl Graphics {
     // What is the right thing to pass into draw_image since I only get the texture canvas in the loop
     // But it's not super useful since it's all point drawing
     //  -- refactor all the canvas bits in picture to something I can narrow down to a simple implementation
-    pub fn render_resource(&mut self, resource: &Resource) {
+    pub fn render_picture(&mut self, resource: &Resource) {
         // TODO: better to just do the above with bytes and create the texture raw?
         // TODO: factor in menu bar -- currently full screen white, but should be white background for the picture viewport, black for the rest (when no menu bar)
         // TODO: don't necessarily want entire clear -> copy -> present logic here or if there are other steps for the current scene, currently an example
@@ -83,6 +123,19 @@ impl Graphics {
         canvas
             .copy(&texture, None, Rect::new(0, 10, 320, 190))
             .expect("Unable to copy texture to the canvas");
+
+        // TODO: we'll need to include other resources in here, like views in the animate call
+
+        canvas.present();
+    }
+
+    pub fn render_view(&mut self, view: &View, group: usize, cel: usize) {
+        // TODO: we don't want a method just to do this - how does view get included into a full scene render?
+        let canvas = &mut self.canvas;
+        canvas.set_draw_color(Color::BLACK);
+        canvas.clear();
+
+        view::draw_image(view, group, cel, &mut GraphicsContext { canvas });
 
         canvas.present();
     }

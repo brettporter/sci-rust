@@ -4,7 +4,7 @@ use log::info;
 use sci::{
     graphics::Graphics,
     resource::{self, Resource, ResourceType},
-    Game,
+    view, Game,
 };
 use sdl2::{event::Event, keyboard::Keycode};
 
@@ -31,8 +31,8 @@ fn find_resource(resources: &HashMap<u16, Resource>, resource_number: u16, inc: 
             }
         }
 
-        if resource::get_resource(resources, ResourceType::Pic, result).is_some() {
-            info!("Navigating to picture {}", result);
+        if resource::get_resource(resources, ResourceType::View, result).is_some() {
+            info!("Navigating to view {}", result);
             return result;
         }
     }
@@ -45,9 +45,13 @@ pub fn run(game: &Game) -> Result<(), String> {
 
     let resources = &game.resources;
 
+    let mut group = 0;
+    let mut cel = 0;
+
     let mut resource_number = find_resource(resources, 0, true);
-    let resource = resource::get_resource(resources, ResourceType::Pic, resource_number).unwrap();
-    graphics.render_picture(resource);
+    let resource = resource::get_resource(resources, ResourceType::View, resource_number).unwrap();
+    let mut view = view::load_view(&resource);
+    graphics.render_view(&view, group, cel);
 
     let mut event_pump = sdl_context.event_pump()?;
     'running: loop {
@@ -61,29 +65,66 @@ pub fn run(game: &Game) -> Result<(), String> {
                     break 'running;
                 }
                 Event::KeyDown {
+                    keycode: Some(Keycode::Up),
+                    ..
+                } => {
+                    group = if group > 0 { group - 1 } else { group };
+                    cel = 0;
+                    graphics.render_view(&view, group, cel);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Down),
+                    ..
+                } => {
+                    group = if group < view.len() - 1 {
+                        group + 1
+                    } else {
+                        group
+                    };
+                    cel = 0;
+                    graphics.render_view(&view, group, cel);
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Space),
+                    ..
+                } => {
+                    cel += 1;
+                    cel %= view[group].len();
+                    graphics.render_view(&view, group, cel);
+                }
+                Event::KeyDown {
                     keycode: Some(Keycode::Left),
                     ..
                 } => {
+                    group = 0;
+                    cel = 0;
+
                     resource_number = find_resource(resources, resource_number, false);
                     let resource =
-                        resource::get_resource(resources, ResourceType::Pic, resource_number)
+                        resource::get_resource(resources, ResourceType::View, resource_number)
                             .unwrap();
-                    graphics.render_picture(resource);
+                    view = view::load_view(&resource);
+                    graphics.render_view(&view, group, cel);
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Right),
                     ..
                 } => {
+                    group = 0;
+                    cel = 0;
+
                     resource_number = find_resource(resources, resource_number, true);
                     let resource =
-                        resource::get_resource(resources, ResourceType::Pic, resource_number)
+                        resource::get_resource(resources, ResourceType::View, resource_number)
                             .unwrap();
-                    graphics.render_picture(resource);
+                    view = view::load_view(&resource);
+                    graphics.render_view(&view, group, cel);
                 }
                 _ => {}
             }
         }
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        // todo!("loop throw cels / loop")
     }
 
     Ok(())
