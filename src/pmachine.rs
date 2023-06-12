@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rand::Rng;
+
 use elsa::FrozenMap;
 use global_counter::primitive::exact::CounterUsize;
 use itertools::Itertools;
@@ -1537,6 +1539,12 @@ impl<'a> PMachine<'a> {
                     list.remove(pos);
                 }
                 None
+            }
+            0x40 => {
+                // Random
+                let (min, max) = (params[1].to_i16(), params[2].to_i16());
+                info!("Kernel> Random {}..={}", min, max);
+                Some(Register::Value(rand::thread_rng().gen_range(min..=max)))
             }
             0x43 => {
                 // GetAngle
