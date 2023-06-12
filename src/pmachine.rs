@@ -14,7 +14,7 @@ use crate::{
     events::EventManager,
     graphics::Graphics,
     resource::{self, Resource, ResourceType},
-    script::Script,
+    script::{Id, Script, StringDefinition},
 };
 
 pub(crate) struct PMachine<'a> {
@@ -24,7 +24,8 @@ pub(crate) struct PMachine<'a> {
     script_cache: FrozenMap<u16, Box<Script>>,
 
     // TODO: move to heap?
-    object_cache: FrozenMap<usize, Box<ObjectInstance>>,
+    object_cache: FrozenMap<Id, Box<ObjectInstance>>,
+    string_cache: FrozenMap<Id, Box<StringDefinition>>,
 
     start_time: Instant,
 }
@@ -40,8 +41,8 @@ enum VariableType {
 // Node key / value are object registers. Can't use register type as Copy would be infinite
 #[derive(Copy, Clone, Debug, PartialEq)]
 struct DblListNode {
-    key: usize,
-    value: usize,
+    key: Id,
+    value: Id,
     list_id: usize,
     list_index: usize,
 }
@@ -59,7 +60,7 @@ struct StackFrame {
     // Code point to return to
     script_number: u16,
     ip: usize,
-    obj: usize,
+    obj: Id,
 
     // Any selectors not yet called in the last send
     remaining_selectors: VecDeque<usize>,
@@ -89,7 +90,7 @@ struct MachineState {
     // TODO: should this just be current_obj data and ip offset modified?
     // Don't need code stored here as we can look it up from the script
     code: Box<Vec<u8>>, // currently executing script data
-    current_obj: usize,
+    current_obj: Id,
     ax: Register,
 
     // Stack information
@@ -150,12 +151,12 @@ enum ObjectType {
 
 // Counter for clones. Starting value ensures no overlap with existing IDs
 // Note: because we are cloning an event every tick this will grow fast, but we have more than enough space in a usize
-static CLONE_COUNTER: CounterUsize = CounterUsize::new(1000 << 16);
-static DBLLIST_COUNTER: CounterUsize = CounterUsize::new(0);
+static CLONE_COUNTER: CounterUsize = CounterUsize::new(1);
+static DBLLIST_COUNTER: CounterUsize = CounterUsize::new(1);
 
 #[derive(Debug)]
 struct ObjectInstance {
-    id: usize,
+    id: Id,
     name: String,
     species: u16,
     object_type: ObjectType,
@@ -205,9 +206,10 @@ impl ObjectInstance {
         // TODO: spec says selectors should be empty - but it might just mean in the memory space and can still look up the inherited ones,
         // or perhaps it calls on a different object with a current object pointer to the clone. May be ok to clone selectors here but re-evaluate if problems.
 
-        // TODO: can avoid cloning?
+        // TODO: can avoid cloning variables/selectors?
+        const CLONE_SPACE: u16 = 1000;
         let instance = ObjectInstance {
-            id,
+            id: Id::new(CLONE_SPACE, id),
             name: self.name.clone(), // TODO: modify to represent clone?
             object_type: ObjectType::Clone,
             species: self.species,
@@ -222,10 +224,10 @@ impl ObjectInstance {
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Register {
     Value(i16),
-    Object(usize),
+    Object(Id),
     Variable(VariableType, i16),
-    String(usize),
-    Address(u16, usize),
+    String(Id, usize),   // TODO: second field being an offset isn't very clear
+    Address(u16, usize), // TODO: a bit redundant - this matches up to ID in script
     DblList(usize),
     Node(DblListNode),
     Undefined,
@@ -238,7 +240,7 @@ impl Register {
         }
     }
 
-    fn to_obj(&self) -> usize {
+    fn to_obj(&self) -> Id {
         match *self {
             Register::Object(v) => v,
             _ => panic!("Register was not an object {:?}", self),
@@ -274,7 +276,8 @@ impl Register {
     fn is_zero_or_null(&self) -> bool {
         match *self {
             Register::Value(v) => v == 0,
-            Register::DblList(v) | Register::Object(v) => v == 0,
+            Register::Object(_v) => false, // some operations check it is not 0, but we don't yet have a use case for defining it that way
+            Register::DblList(v) => v == 0,
             Register::Node(_) => false, // Nodes can be checked against null but are never null (in that case a Value(0) was returned instead) -- TODO: do we make it nullable somehow instead?
             _ => panic!("Register {:?} doesn't have a zero value", *self),
         }
@@ -284,7 +287,7 @@ impl Register {
         *self = match *self {
             Register::Value(v) => match inc {
                 Register::Value(v2) => Register::Value(v + v2),
-                Register::String(v2) => dbg!(Register::String(v2 + v as usize)),
+                Register::String(v2, offset) => Register::String(v2, offset + v as usize), // TODO: no bounds checking on length of string here
                 _ => panic!("Second register was not able to be added {:?}", inc),
             },
             _ => panic!("Register was not a value {:?}", self),
@@ -295,6 +298,13 @@ impl Register {
         *self = match *self {
             Register::Value(v) => Register::Value(v + inc),
             _ => panic!("Register was not a value {:?}", self),
+        }
+    }
+
+    fn to_string(&self) -> (Id, usize) {
+        match *self {
+            Register::String(id, offset) => (id, offset),
+            _ => panic!("Register was not a string {:?}", self),
         }
     }
 }
@@ -352,6 +362,7 @@ impl<'a> PMachine<'a> {
             play_selector,
             script_cache: FrozenMap::new(),
             object_cache: FrozenMap::new(),
+            string_cache: FrozenMap::new(),
             start_time: Instant::now(),
         }
     }
@@ -364,7 +375,7 @@ impl<'a> PMachine<'a> {
     }
 
     fn initialise_object(&self, obj: &crate::script::ClassDefinition) -> &ObjectInstance {
-        if let Some(o) = self.object_cache.get(&obj.id()) {
+        if let Some(o) = self.object_cache.get(&obj.id) {
             return o;
         }
 
@@ -378,7 +389,7 @@ impl<'a> PMachine<'a> {
         };
 
         let instance = ObjectInstance {
-            id: obj.id(),
+            id: obj.id,
             name: String::from(&obj.name),
             species: obj.species,
             object_type: FromPrimitive::from_u16(obj.info & !0x4).unwrap(), // TODO: what does the 0x4 represent?
@@ -396,7 +407,19 @@ impl<'a> PMachine<'a> {
             var_selectors,
             func_selectors: self.get_inherited_functions(&obj),
         };
-        self.object_cache.insert(obj.id(), Box::new(instance))
+        self.object_cache.insert(obj.id, Box::new(instance))
+    }
+
+    fn initialise_string(&self, s: &crate::script::StringDefinition) -> &StringDefinition {
+        if let Some(s) = self.string_cache.get(&s.id) {
+            return s;
+        }
+        // TODO: just a copy, is this necessary
+        let instance = StringDefinition {
+            id: s.id,
+            string: s.string.clone(),
+        };
+        self.string_cache.insert(s.id, Box::new(instance))
     }
 
     pub(crate) fn run_game_play_method(
@@ -507,12 +530,11 @@ impl<'a> PMachine<'a> {
                 }
                 0x1a | 0x1b => {
                     // eq?
-                    state.ax =
-                        Register::Value(if state.ax.to_i16() == stack.pop().unwrap().to_i16() {
-                            1
-                        } else {
-                            0
-                        });
+                    state.ax = Register::Value(if state.ax == stack.pop().unwrap() {
+                        1
+                    } else {
+                        0
+                    });
                 }
                 0x1c | 0x1d => {
                     // ne?
@@ -665,7 +687,7 @@ impl<'a> PMachine<'a> {
 
                     // call command, put return value into ax
                     if let Some(value) =
-                        self.call_kernel_command(&mut heap, graphics, k_func, params)
+                        self.call_kernel_command(&mut state, &mut heap, graphics, k_func, params)
                     {
                         state.ax = value;
                     }
@@ -779,7 +801,7 @@ impl<'a> PMachine<'a> {
                         // super B class B stackframe
                         let class_num = state.read_u8() as u16;
                         let class = self.get_class_definition(class_num).unwrap();
-                        (current_obj, self.get_object(class.id()))
+                        (current_obj, self.get_object(class.id))
                     } else {
                         // send B
                         let obj = self.get_object(state.ax.to_obj());
@@ -846,7 +868,7 @@ impl<'a> PMachine<'a> {
                     // class B
                     let class_num = state.read_u8() as u16;
                     let class = self.get_class_definition(class_num).unwrap();
-                    let obj = self.get_object(class.id());
+                    let obj = self.get_object(class.id);
 
                     // TODO: do we need to change script?
                     state.ax = Register::Object(obj.id);
@@ -885,7 +907,10 @@ impl<'a> PMachine<'a> {
                 0x63 => {
                     // pToa B offset
                     let offset = state.read_u8();
-                    debug!("property @offset {offset} to acc for {}", state.current_obj);
+                    debug!(
+                        "property @offset {offset} to acc for {:?}",
+                        state.current_obj
+                    );
                     state.ax = self
                         .get_object(state.current_obj)
                         .get_property_by_offset(offset);
@@ -893,7 +918,10 @@ impl<'a> PMachine<'a> {
                 0x65 => {
                     // aTop B offset
                     let offset = state.read_u8();
-                    debug!("acc to property @offset {offset} for {}", state.current_obj);
+                    debug!(
+                        "acc to property @offset {offset} for {:?}",
+                        state.current_obj
+                    );
                     self.get_object(state.current_obj)
                         .set_property_by_offset(offset, state.ax);
                 }
@@ -930,10 +958,10 @@ impl<'a> PMachine<'a> {
                     state.ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
-                        Register::String(s.offset)
+                        Register::String(self.initialise_string(s).id, 0)
                     } else if let Some(s) = script.get_get_said_by_offset(v) {
                         // todo!("support 'said'");
-                        Register::Address(state.script, s.offset)
+                        Register::Address(state.script, s.id.offset)
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
                         todo!("Unknown method loading from address {:x}", v);
@@ -1111,7 +1139,7 @@ impl<'a> PMachine<'a> {
         let mut func_selectors: HashMap<u16, (u16, u16)> = HashMap::new();
 
         for (s, offset) in &obj_class.function_selectors {
-            func_selectors.insert(*s, (obj_class.script_number, *offset));
+            func_selectors.insert(*s, (obj_class.id.script_number, *offset));
         }
 
         if obj_class.super_class != NO_SUPER_CLASS {
@@ -1204,6 +1232,7 @@ impl<'a> PMachine<'a> {
 
     fn call_kernel_command(
         &self,
+        state: &mut MachineState,
         heap: &mut Heap,
         graphics: &mut Graphics, // TODO: avoid passing this around...
         kernel_function: u8,
@@ -1251,13 +1280,13 @@ impl<'a> PMachine<'a> {
                 // TODO: wrap all the direct uses of object_cache and dbllist_cache
                 let obj = self.get_object(params[1].to_obj());
                 let id = self.clone_object(obj);
-                info!("Kernel> Clone obj: {} to {id}", obj.name);
+                info!("Kernel> Clone obj: {} to {:?}", obj.name, id);
                 Some(Register::Object(id))
             }
             0x05 => {
                 // DisposeClone
                 let id = params[1].to_obj();
-                info!("Kernel> Dispose Clone obj: {id}");
+                info!("Kernel> Dispose Clone obj: {:?}", id);
                 self.dispose_clone(id);
                 None
             }
@@ -1400,7 +1429,7 @@ impl<'a> PMachine<'a> {
                 // NewNode
                 let value = params[1].to_obj();
                 let key = params[2].to_obj();
-                info!("Kernel> NewNode v: {:x} k: {:x}", value, key);
+                info!("Kernel> NewNode v: {:x?} k: {:x?}", value, key);
                 Some(Register::Node(DblListNode {
                     key,
                     value,
@@ -1488,13 +1517,26 @@ impl<'a> PMachine<'a> {
                 // Is keyed by an object - TODO: check if other types are also used
                 let key = params[2].to_obj();
 
-                info!("Kernel> FindKey {:x} in {:x}", key, list_ptr);
+                info!("Kernel> FindKey {:x?} in {:x}", key, list_ptr);
                 let list = heap.dbllist_cache.get(&list_ptr).unwrap();
                 if let Some(&node) = list.iter().find(|&n| n.key == key) {
                     Some(Register::Node(node))
                 } else {
                     Some(Register::Value(0))
                 }
+            }
+            0x3f => {
+                let list_ptr = params[1].to_dbllist();
+                if list_ptr == 0 {
+                    return Some(Register::Value(0));
+                }
+                let key = params[2].to_obj();
+                info!("Kernel> DeleteKey {:x?} in {:x}", key, list_ptr);
+                let list = heap.dbllist_cache.get_mut(&list_ptr).unwrap();
+                if let Some((pos, _)) = list.iter().find_position(|&n| n.key == key) {
+                    list.remove(pos);
+                }
+                None
             }
             0x43 => {
                 // GetAngle
@@ -1528,6 +1570,32 @@ impl<'a> PMachine<'a> {
                     todo!("Implement GetTime {:?}", mode);
                 }
             }
+            0x49 => {
+                // StrCmp
+                let (s1, s2) = (params[1].to_string(), params[2].to_string());
+                // We have some that are indexed into the string, so can't lookup by offset - get straight from data
+
+                // TODO: would be better if we had a ref into the string table with a slice
+                // This is a bit unclear, but we're using .0 as the ID and .1 as the offset into that string, so this
+                // returns the slice of the actual string from offset (which is the whole string by default)
+                let (s1, s2) = (
+                    &self.get_string(s1.0).string[s1.1..],
+                    &self.get_string(s2.0).string[s2.1..],
+                );
+
+                let ord = if params.len() > 3 {
+                    let n = params[3].to_i16() as usize;
+                    s1[..n].cmp(&s2[..n])
+                } else {
+                    s1.cmp(s2)
+                };
+                info!("Kernel> StrCmp {}, {}", s1, s2);
+                Some(Register::Value(match ord {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                }))
+            }
             0x4f => {
                 // BaseSetter
                 info!("Kernel> BaseSetter");
@@ -1544,7 +1612,7 @@ impl<'a> PMachine<'a> {
                 // CanBeHere
                 let obj = params[1].to_obj();
                 // TODO: support optional parameter of a clip list (DblList) -- assert if the rest is working
-                info!("Kernel> Can be here: {}", obj);
+                info!("Kernel> Can be here: {:?}", obj);
                 // TODO: infinite loop unless we do this properly. For now always succeed.
                 return Some(Register::Value(1));
             }
@@ -1639,17 +1707,17 @@ impl<'a> PMachine<'a> {
         state.temp_pos = stackframe_end;
     }
 
-    fn get_object(&self, id: usize) -> &ObjectInstance {
+    fn get_object(&self, id: Id) -> &ObjectInstance {
         self.object_cache.get(&id).unwrap()
     }
 
-    fn clone_object(&self, obj: &ObjectInstance) -> usize {
+    fn clone_object(&self, obj: &ObjectInstance) -> Id {
         let clone = obj.kernel_clone();
         assert!(self.object_cache.get(&clone.id).is_none());
         self.object_cache.insert(clone.id, clone).id
     }
 
-    fn dispose_clone(&self, id: usize) {
+    fn dispose_clone(&self, id: Id) {
         // todo!(): stuck on mutability here
         // self.object_cache.as_mut().remove(&id);
     }
@@ -1658,6 +1726,10 @@ impl<'a> PMachine<'a> {
         let script_number = self.class_scripts[&class_num];
         let script = self.load_script(script_number)?;
         script.get_class(class_num)
+    }
+
+    fn get_string(&self, s: Id) -> &StringDefinition {
+        self.string_cache.get(&s).unwrap()
     }
 }
 

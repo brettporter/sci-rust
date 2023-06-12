@@ -43,9 +43,23 @@ struct ScriptBlock<'a> {
     block_data: &'a [u8],
 }
 
-pub(crate) struct ClassDefinition {
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Id {
     pub script_number: u16, // TODO: we might want a better reference than this
-    offset: usize,
+    pub offset: usize,
+}
+impl Id {
+    pub fn new(script_number: u16, offset: usize) -> Id {
+        assert!(offset > 0);
+        Id {
+            script_number,
+            offset,
+        }
+    }
+}
+
+pub(crate) struct ClassDefinition {
+    pub id: Id,
     pub species: u16,
     pub super_class: u16,
     pub info: u16, // TODO: enum for type?
@@ -55,21 +69,14 @@ pub(crate) struct ClassDefinition {
     // TODO: better definition than this
     pub function_selectors: Vec<(u16, u16)>,
 }
-impl ClassDefinition {
-    // TODO: set on construction
-    pub(crate) fn id(&self) -> usize {
-        assert!(self.offset < u16::MAX as usize);
-        usize::from(self.script_number) << 16 | self.offset
-    }
-}
 
 pub(crate) struct StringDefinition {
-    pub offset: usize,
+    pub id: Id,
     pub string: String,
 }
 
 pub(crate) struct SaidDefinition {
-    pub offset: usize,
+    pub id: Id,
     pub spec: Vec<u8>,
 }
 
@@ -139,7 +146,7 @@ impl Script {
                     for spec in specs.filter(|&s| s != [0]) {
                         debug!("Said spec ({:x?})", spec);
                         said_specs.push(SaidDefinition {
-                            offset: block.block_offset + index,
+                            id: Id::new(resource.resource_number, block.block_offset + index),
                             spec: spec.to_vec(),
                         });
                         index += spec.len() + 1;
@@ -157,7 +164,7 @@ impl Script {
                         debug!("String: '{string}'");
                         let l = string.len() + 1;
                         strings.push(StringDefinition {
-                            offset: index + block.block_offset,
+                            id: Id::new(resource.resource_number, block.block_offset + index),
                             string,
                         });
                         index += l;
@@ -224,15 +231,18 @@ impl Script {
     }
 
     pub(crate) fn get_object(&self, offset: usize) -> &ClassDefinition {
-        self.objects.iter().find(|&o| o.offset == offset).unwrap()
+        self.objects
+            .iter()
+            .find(|&o| o.id.offset == offset)
+            .unwrap()
     }
 
     pub(crate) fn get_string_by_offset(&self, offset: usize) -> Option<&StringDefinition> {
-        self.strings.iter().find(|&s| s.offset == offset)
+        self.strings.iter().find(|&s| s.id.offset == offset)
     }
 
     pub(crate) fn get_object_by_offset(&self, offset: usize) -> Option<&ClassDefinition> {
-        self.objects.iter().find(|&o| o.offset == offset)
+        self.objects.iter().find(|&o| o.id.offset == offset)
     }
 
     pub(crate) fn get_dispatch_address(&self, dispatch_number: u16) -> u16 {
@@ -240,7 +250,7 @@ impl Script {
     }
 
     pub(crate) fn get_get_said_by_offset(&self, offset: usize) -> Option<&SaidDefinition> {
-        self.said_specs.iter().find(|&s| s.offset == offset)
+        self.said_specs.iter().find(|&s| s.id.offset == offset)
     }
 }
 
@@ -312,8 +322,7 @@ fn parse_class_definition(block: &ScriptBlock, resource: &Resource) -> ClassDefi
 
     // TODO: species, super_class, name_offset are duplicated, would it be better to add helper methods to class definition into the variables and then remove the destructuring in here?
     ClassDefinition {
-        script_number: resource.resource_number,
-        offset: block.block_offset + 8,
+        id: Id::new(resource.resource_number, block.block_offset + 8),
         species,
         super_class,
         info,
