@@ -167,7 +167,7 @@ pub fn get_resource<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Borrow, path::PathBuf};
+    use std::path::PathBuf;
 
     use super::*;
 

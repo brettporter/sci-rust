@@ -702,7 +702,7 @@ impl<'a> PMachine<'a> {
 
                     // call command, put return value into ax
                     if let Some(value) =
-                        self.call_kernel_command(&mut state, &mut heap, graphics, k_func, params)
+                        self.call_kernel_command(&mut heap, graphics, k_func, params)
                     {
                         state.ax = value;
                     }
@@ -1258,7 +1258,6 @@ impl<'a> PMachine<'a> {
 
     fn call_kernel_command(
         &self,
-        state: &mut MachineState,
         heap: &mut Heap,
         graphics: &mut Graphics, // TODO: avoid passing this around...
         kernel_function: u8,
@@ -1750,8 +1749,6 @@ impl<'a> PMachine<'a> {
                     kernel_function, params
                 );
                 todo!("Implement missing kernel command {:x}", kernel_function);
-                // TODO: temp assuming it returns a value
-                Some(Register::Value(0))
             }
         };
     }
@@ -1844,6 +1841,7 @@ fn init_script_local_variables(script: &Script) -> Vec<Register> {
         .collect_vec()
 }
 
+#[allow(dead_code)]
 fn dump_stack(stack: &Vec<Register>, state: &MachineState) {
     // TODO: maybe show call stack too
     for i in 0..stack.len() {

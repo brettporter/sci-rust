@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ffi::CStr};
+use std::ffi::CStr;
 
 use itertools::Itertools;
 use log::debug;
