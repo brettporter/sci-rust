@@ -34,7 +34,7 @@ struct ResourceMapEntry {
 }
 
 pub struct Resource {
-    resource_type: ResourceType,
+    pub resource_type: ResourceType,
     pub resource_number: u16,
 
     // TODO: better way to handle this? For now just raw uncompressed data

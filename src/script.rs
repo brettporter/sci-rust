@@ -27,12 +27,12 @@ pub(crate) struct Script {
     // TODO: change all the "number" to id
     pub number: u16,
     exports: Vec<u16>,
-    pub variables: RefCell<Vec<u16>>, // TODO: if we can't live with u16 then we might need to copy it into the loop
     classes: Vec<ClassDefinition>,
     objects: Vec<ClassDefinition>,
     strings: Vec<StringDefinition>,
     said_specs: Vec<SaidDefinition>,
     main_object_offset: Option<usize>,
+    pub variables: Vec<u16>, // TODO: if we can't live with u16 then we might need to copy it into the loop
     pub data: Box<Vec<u8>>,
 }
 
@@ -126,7 +126,7 @@ impl Script {
 
         let mut classes = Vec::new();
         let mut objects = Vec::new();
-        let mut variables = RefCell::new(Vec::new());
+        let mut variables = Vec::new();
         let mut strings = Vec::new();
         let mut said_specs = Vec::new();
         for block in blocks {
@@ -139,7 +139,9 @@ impl Script {
                 ScriptBlockType::Code => {
                     debug!("Code (first byte {:x})", block.block_data[0]);
                 }
-                ScriptBlockType::SynonymWordList => todo!(),
+                ScriptBlockType::SynonymWordList => {
+                    // todo!()
+                }
                 ScriptBlockType::Said => {
                     let specs = block.block_data.split(|&c| c == 0xff);
                     let mut index = 0;
@@ -187,14 +189,10 @@ impl Script {
                     assert!(block.block_data.is_empty());
                 }
                 ScriptBlockType::LocalVariables => {
-                    variables = RefCell::new(
-                        (0..block.block_data.len())
-                            .step_by(2)
-                            .map(|i| {
-                                u16::from_le_bytes(block.block_data[i..i + 2].try_into().unwrap())
-                            })
-                            .collect_vec(),
-                    );
+                    variables = (0..block.block_data.len())
+                        .step_by(2)
+                        .map(|i| u16::from_le_bytes(block.block_data[i..i + 2].try_into().unwrap()))
+                        .collect_vec();
                     debug!("Local variables");
                 }
                 _ => {}

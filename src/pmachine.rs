@@ -37,7 +37,7 @@ enum VariableType {
     Global,
     Local,
     Temporary,
-    Paramter,
+    Parameter,
 }
 
 // Node key / value are object registers. Can't use register type as Copy would be infinite
@@ -378,7 +378,7 @@ impl<'a> PMachine<'a> {
 
     fn load_game_object(&self) -> &ObjectInstance {
         // load the play method from the game object (at exports[0]) in script 000
-        let init_script = self.load_script(SCRIPT_MAIN).unwrap();
+        let init_script = self.initialise_script(SCRIPT_MAIN).unwrap();
 
         self.initialise_object(init_script.get_main_object())
     }
@@ -452,7 +452,6 @@ impl<'a> PMachine<'a> {
         event_manager: &mut EventManager,
     ) {
         let mut stack: Vec<Register> = Vec::new();
-
         let mut call_stack: Vec<StackFrame> = Vec::new();
 
         let (script_number, code_offset) = run_object.get_func_selector(selector);
@@ -464,7 +463,7 @@ impl<'a> PMachine<'a> {
 
         // TODO: better to do this by execution a machine function? Not happy with passing all the info in
         // TODO: separate registers and stack frames, can keep some of this out of the send to selector function which is just creating a call
-        let s = self.load_script(script_number).unwrap();
+        let s = self.initialise_script(script_number).unwrap();
 
         let mut state = MachineState {
             code: s.data.clone(), // TODO: remove clone
@@ -481,25 +480,27 @@ impl<'a> PMachine<'a> {
         let mut heap = Heap::new();
 
         // Pre-load objects for all classes to avoid lazy init problems
+        // TODO: may not need to retain class_scripts afterwards, consider simplifying
+        // TODO: does this cover every script or need to enumerate resources?
+        let mut script_local_variables = HashMap::new();
+
+        for script_number in self.resources.iter().filter_map(|(_, r)| {
+            if r.resource_type == ResourceType::Script {
+                Some(r.resource_number)
+            } else {
+                None
+            }
+        }) {
+            if let Some(script) = self.initialise_script(script_number) {
+                script_local_variables.insert(script_number, init_script_local_variables(script));
+            }
+        }
+
         for class_num in self.class_scripts.keys() {
             if let Some(def) = self.get_class_definition(*class_num) {
                 self.initialise_object(def);
             }
         }
-
-        // TODO: get variables from all loaded scripts, rather than loading again
-        let mut global_vars: Vec<Register> = self
-            .load_script(SCRIPT_MAIN)
-            .unwrap()
-            .variables
-            .borrow()
-            .iter()
-            .map(|&v| {
-                // TODO: remove this assertion when we are confident an i16 can be used
-                assert!(v <= i16::MAX as u16 || v == 0xffff);
-                Register::Value(v as i16)
-            })
-            .collect_vec();
 
         loop {
             // TODO: break this out into a method and ensure there are good unit tests for the behaviours (e.g. the issues with num_params being wrong for call methods)
@@ -709,7 +710,8 @@ impl<'a> PMachine<'a> {
                     if k_func == 0x45 {
                         if let Some(quit) = event_manager.poll() {
                             if quit {
-                                global_vars[4] = Register::Value(1);
+                                script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[4] =
+                                    Register::Value(1);
                             }
                         }
                     }
@@ -758,7 +760,7 @@ impl<'a> PMachine<'a> {
                     );
 
                     let previous_obj = self.get_object(state.current_obj);
-                    let script = self.load_script(frame.script_number).unwrap();
+                    let script = self.get_script(frame.script_number);
                     state.update_script(script);
                     state.ip = frame.ip;
                     state.current_obj = frame.obj;
@@ -978,7 +980,7 @@ impl<'a> PMachine<'a> {
                     // Need to check what it is at this address
                     // TODO: can we generalise what the script gives back by a type?
                     let v = (state.ip as i16 + offset) as usize;
-                    let script = self.load_script(state.script).unwrap();
+                    let script = self.get_script(state.script);
                     state.ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
@@ -1012,7 +1014,7 @@ impl<'a> PMachine<'a> {
                     // lag B
                     let var = state.read_u8() as usize;
                     debug!("load global {} to acc", var);
-                    state.ax = global_vars[var];
+                    state.ax = script_local_variables[&SCRIPT_MAIN][var];
                 }
                 0x85 => {
                     // lat B
@@ -1034,17 +1036,13 @@ impl<'a> PMachine<'a> {
                     // lsg B
                     let var = state.read_u8() as usize;
                     debug!("load global {} to stack", var);
-                    stack.push(global_vars[var]);
+                    stack.push(script_local_variables[&SCRIPT_MAIN][var]);
                 }
                 0x8b => {
                     // lsl B
                     let var = state.read_u8();
                     debug!("load local {} to stack", var);
-                    // TODO: local variable boilerplate could be reduced, can they have a pointer in the state somewhere like data?
-                    let script = self.load_script(state.script).unwrap();
-                    stack.push(Register::Value(
-                        script.variables.borrow()[var as usize] as i16,
-                    ));
+                    stack.push(script_local_variables.get(&state.script).unwrap()[var as usize]);
                 }
                 0x8d => {
                     // lst B
@@ -1074,7 +1072,7 @@ impl<'a> PMachine<'a> {
                     // lsgi W
                     let var = state.read_u16() + state.ax.to_u16();
                     debug!("load global {} to stack", var);
-                    stack.push(global_vars[var as usize]);
+                    stack.push(script_local_variables[&SCRIPT_MAIN][var as usize]);
                 }
                 0x9f => {
                     // lspi B
@@ -1086,20 +1084,19 @@ impl<'a> PMachine<'a> {
                     // sag W
                     let var = state.read_u16();
                     debug!("store accumulator to global {}", var);
-                    global_vars[var as usize] = state.ax;
+                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] = state.ax;
                 }
                 0xa1 => {
                     // sag B
                     let var = state.read_u8();
                     debug!("store accumulator to global {}", var);
-                    global_vars[var as usize] = state.ax;
+                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] = state.ax;
                 }
                 0xa3 => {
                     // sal B
                     let var = state.read_u8();
                     debug!("store accumulator to local {}", var);
-                    let script = self.load_script(state.script).unwrap();
-                    script.variables.borrow_mut()[var as usize] = state.ax.to_u16();
+                    script_local_variables.get_mut(&state.script).unwrap()[var as usize] = state.ax;
                 }
                 0xa5 => {
                     // sat B
@@ -1118,13 +1115,13 @@ impl<'a> PMachine<'a> {
                     let var = state.read_u16();
                     let idx = var + state.ax.to_u16();
                     debug!("store accumulator {} to global {}", state.ax.to_u16(), idx);
-                    global_vars[idx as usize] = state.ax;
+                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[idx as usize] = state.ax;
                 }
                 0xc1 => {
                     // +ag B
                     let var = state.read_u8() as usize;
-                    global_vars[var].add(1);
-                    state.ax = global_vars[var];
+                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].add(1);
+                    state.ax = script_local_variables[&SCRIPT_MAIN][var];
                 }
                 0xc5 => {
                     // +at B
@@ -1151,7 +1148,7 @@ impl<'a> PMachine<'a> {
 
     fn get_inherited_var_selectors(&self, obj_class: &crate::script::ClassDefinition) -> &Vec<u16> {
         let script_num = self.class_scripts[&obj_class.super_class];
-        let script = self.load_script(script_num).unwrap();
+        let script = self.initialise_script(script_num).unwrap();
         let super_class_def = script.get_class(obj_class.super_class).unwrap();
         &super_class_def.variable_selectors
     }
@@ -1169,7 +1166,7 @@ impl<'a> PMachine<'a> {
         if obj_class.super_class != NO_SUPER_CLASS {
             let script_num = self.class_scripts[&obj_class.super_class];
 
-            let script = self.load_script(script_num).unwrap();
+            let script = self.initialise_script(script_num).unwrap();
 
             let super_class_def = script.get_class(obj_class.super_class).unwrap();
             for (k, v) in self.get_inherited_functions(super_class_def) {
@@ -1179,7 +1176,11 @@ impl<'a> PMachine<'a> {
         func_selectors
     }
 
-    fn load_script(&self, number: u16) -> Option<&Script> {
+    fn get_script(&self, number: u16) -> &Script {
+        self.script_cache.get(&number).unwrap()
+    }
+
+    fn initialise_script(&self, number: u16) -> Option<&Script> {
         if let Some(script) = self.script_cache.get(&number) {
             return Some(script);
         }
@@ -1243,7 +1244,7 @@ impl<'a> PMachine<'a> {
                 remaining_selectors: selector_offsets,
             };
 
-            let script = self.load_script(script_number).unwrap();
+            let script = self.get_script(script_number);
             state.update_script(script);
             state.ip = code_offset as usize;
 
@@ -1284,7 +1285,7 @@ impl<'a> PMachine<'a> {
                     script_number, dispatch_number
                 );
 
-                let script = self.load_script(script_number).unwrap();
+                let script = self.initialise_script(script_number).unwrap();
                 let addr = script.get_dispatch_address(dispatch_number) as usize;
                 if let Some(obj) = script.get_object_by_offset(addr) {
                     Some(Register::Object(self.initialise_object(obj).id))
@@ -1383,22 +1384,28 @@ impl<'a> PMachine<'a> {
             0x1b => {
                 // Display (text)
 
-                // TODO: not a string type - load text resource?
-                // let s = self.get_string_value(params[1]);
-                let txt_res =
-                    resource::get_resource(&self.resources, ResourceType::Text, params[1].to_u16())
+                // params[1] may be a string (from format), or a resource (in which case, params[2] is a string number)
+                let (txt, next_param) = match params[1] {
+                    Register::String(_, _) => (self.get_string_value(params[1]), 2),
+                    Register::Value(res_num) => {
+                        let txt_res = resource::get_resource(
+                            &self.resources,
+                            ResourceType::Text,
+                            res_num as u16,
+                        )
                         .unwrap();
-                let str_num = params[2].to_u16();
+                        let str_num = params[2].to_u16();
 
-                // TODO: proper parsing of text resource
-                let strings = txt_res.resource_data.split(|&x| x == 0).collect_vec();
-                let txt = std::str::from_utf8(strings[str_num as usize]).unwrap();
+                        // TODO: proper parsing of text resource
+                        let strings = txt_res.resource_data.split(|&x| x == 0).collect_vec();
+                        let txt = std::str::from_utf8(strings[str_num as usize]).unwrap();
+                        (txt, 3)
+                    }
+                    _ => panic!("Register was not a string or a value {:?}", params[1]),
+                };
 
-                info!(
-                    "Kernel> Display {}@{} {}",
-                    txt_res.resource_number, str_num, txt
-                );
-                // TODO: handle commands in subsequent parameters
+                info!("Kernel> Display {}", txt);
+                // TODO: handle commands in subsequent parameters, starting from next_param
                 // TODO: display text
                 // TODO: handle return to &FarPtr
                 None
@@ -1650,6 +1657,32 @@ impl<'a> PMachine<'a> {
                     std::cmp::Ordering::Greater => 1,
                 }))
             }
+            0x4c => {
+                // Format (string)
+                // TODO: get dest from first parameter, which is also what is returned
+
+                // TODO: duplicated with Display, refactor
+                let txt_res =
+                    resource::get_resource(&self.resources, ResourceType::Text, params[2].to_u16())
+                        .unwrap();
+                let str_num = params[3].to_u16();
+
+                // TODO: proper parsing of text resource
+                let strings = txt_res.resource_data.split(|&x| x == 0).collect_vec();
+                let fmt = std::str::from_utf8(strings[str_num as usize]).unwrap();
+
+                // TODO: read parameters for formatting
+                info!("Kernel> Format {}", fmt);
+                // TODO: implement this
+                // todo!(): return the string not the formatting - this is just a dummy valid value
+                Some(Register::String(
+                    Id {
+                        script_number: 99,
+                        offset: 449,
+                    },
+                    0,
+                ))
+            }
             0x4f => {
                 // BaseSetter
                 info!("Kernel> BaseSetter");
@@ -1753,7 +1786,7 @@ impl<'a> PMachine<'a> {
         state.num_params = stack[stackframe_start].to_u16();
 
         // Switch to script
-        let script = self.load_script(script_num).unwrap();
+        let script = self.get_script(script_num);
         state.update_script(script);
         state.ip = script.get_dispatch_address(dispatch_index) as usize;
 
@@ -1778,7 +1811,7 @@ impl<'a> PMachine<'a> {
 
     fn get_class_definition(&self, class_num: u16) -> Option<&crate::script::ClassDefinition> {
         let script_number = self.class_scripts[&class_num];
-        let script = self.load_script(script_number)?;
+        let script = self.initialise_script(script_number)?;
         script.get_class(class_num)
     }
 
@@ -1793,6 +1826,18 @@ impl<'a> PMachine<'a> {
         let s = s.to_string();
         &self.get_string(s.0).string[s.1..]
     }
+}
+
+fn init_script_local_variables(script: &Script) -> Vec<Register> {
+    script
+        .variables
+        .iter()
+        .map(|&v| {
+            // TODO: remove this assertion when we are confident an i16 can be used
+            // assert!(v <= i16::MAX as u16 || v == 0xffff);
+            Register::Value(v as i16)
+        })
+        .collect_vec()
 }
 
 fn dump_stack(stack: &Vec<Register>, state: &MachineState) {
