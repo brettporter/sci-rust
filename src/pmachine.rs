@@ -1355,6 +1355,36 @@ impl<'a> PMachine<'a> {
                 // No return value
                 None
             }
+            0x0e => {
+                // NumCels
+                let obj = params[1].to_obj();
+                info!("Kernel> NumCels for object {:?}", obj);
+                // todo!("number of cels - needs to load view")
+                Some(Register::Value(0))
+            }
+            0x1b => {
+                // Display (text)
+
+                // TODO: not a string type - load text resource?
+                // let s = self.get_string_value(params[1]);
+                let txt_res =
+                    resource::get_resource(&self.resources, ResourceType::Text, params[1].to_u16())
+                        .unwrap();
+                let str_num = params[2].to_u16();
+
+                // TODO: proper parsing of text resource
+                let strings = txt_res.resource_data.split(|&x| x == 0).collect_vec();
+                let txt = std::str::from_utf8(strings[str_num as usize]).unwrap();
+
+                info!(
+                    "Kernel> Display {}@{} {}",
+                    txt_res.resource_number, str_num, txt
+                );
+                // TODO: handle commands in subsequent parameters
+                // TODO: display text
+                // TODO: handle return to &FarPtr
+                None
+            }
             0x1c => {
                 // GetEvent
                 let flags = params[1].to_i16();
@@ -1584,15 +1614,9 @@ impl<'a> PMachine<'a> {
             }
             0x49 => {
                 // StrCmp
-                let (s1, s2) = (params[1].to_string(), params[2].to_string());
-                // We have some that are indexed into the string, so can't lookup by offset - get straight from data
-
-                // TODO: would be better if we had a ref into the string table with a slice
-                // This is a bit unclear, but we're using .0 as the ID and .1 as the offset into that string, so this
-                // returns the slice of the actual string from offset (which is the whole string by default)
                 let (s1, s2) = (
-                    &self.get_string(s1.0).string[s1.1..],
-                    &self.get_string(s2.0).string[s2.1..],
+                    self.get_string_value(params[1]),
+                    self.get_string_value(params[2]),
                 );
 
                 let ord = if params.len() > 3 {
@@ -1742,6 +1766,14 @@ impl<'a> PMachine<'a> {
 
     fn get_string(&self, s: Id) -> &StringDefinition {
         self.string_cache.get(&s).unwrap()
+    }
+
+    fn get_string_value(&self, s: Register) -> &str {
+        // TODO: would be better if we had a ref into the string table with a slice
+        // This is a bit unclear, but we're using .0 as the ID and .1 as the offset into that string, so this
+        // returns the slice of the actual string from offset (which is the whole string by default)
+        let s = s.to_string();
+        &self.get_string(s.0).string[s.1..]
     }
 }
 
