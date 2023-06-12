@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{Local, Timelike};
 use rand::Rng;
 
 use elsa::FrozenMap;
@@ -1626,7 +1627,6 @@ impl<'a> PMachine<'a> {
                 let mode = params.len() > 1;
                 info!("Kernel> GetTime (system time?: {:?})", mode);
 
-                // TODO: what about not present
                 if !mode {
                     // Convert millis to ticks (60 ticks/sec)
                     let ticks = self.start_time.elapsed().as_millis() * 60 / 1000;
@@ -1634,7 +1634,11 @@ impl<'a> PMachine<'a> {
                     debug!("ticks = {} -> {}", ticks, ticks as i16);
                     Some(Register::Value(ticks as i16))
                 } else {
-                    todo!("Implement GetTime {:?}", mode);
+                    let local = Local::now();
+                    let t = local.hour12().1 << 12 | local.minute() << 6 | local.second();
+                    debug!("time = {}", t);
+                    assert!(t < i16::MAX as u32);
+                    Some(Register::Value(t as i16))
                 }
             }
             0x49 => {
