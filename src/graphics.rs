@@ -66,6 +66,7 @@ impl Graphics {
         let window = video_subsystem
             .window("SCI Player", 1920, 1200)
             .position_centered()
+            .fullscreen_desktop()
             .build()
             .expect("could not initialize video subsystem");
 
