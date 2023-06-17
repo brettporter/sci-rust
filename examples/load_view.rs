@@ -51,10 +51,13 @@ pub fn run(game: &Game) -> Result<(), String> {
     let mut resource_number = find_resource(resources, 0, true);
     let resource = resource::get_resource(resources, ResourceType::View, resource_number).unwrap();
     let mut view = view::load_view(&resource);
-    graphics.render_view(&view, group, cel);
+    graphics.clear();
+    graphics.draw_view(&view, group, cel);
+    graphics.present();
 
     let mut event_pump = sdl_context.event_pump()?;
     'running: loop {
+        graphics.clear();
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -70,7 +73,6 @@ pub fn run(game: &Game) -> Result<(), String> {
                 } => {
                     group = if group > 0 { group - 1 } else { group };
                     cel = 0;
-                    graphics.render_view(&view, group, cel);
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Down),
@@ -82,7 +84,6 @@ pub fn run(game: &Game) -> Result<(), String> {
                         group
                     };
                     cel = 0;
-                    graphics.render_view(&view, group, cel);
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Space),
@@ -90,7 +91,6 @@ pub fn run(game: &Game) -> Result<(), String> {
                 } => {
                     cel += 1;
                     cel %= view[group].len();
-                    graphics.render_view(&view, group, cel);
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Left),
@@ -104,7 +104,6 @@ pub fn run(game: &Game) -> Result<(), String> {
                         resource::get_resource(resources, ResourceType::View, resource_number)
                             .unwrap();
                     view = view::load_view(&resource);
-                    graphics.render_view(&view, group, cel);
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Right),
@@ -118,13 +117,13 @@ pub fn run(game: &Game) -> Result<(), String> {
                         resource::get_resource(resources, ResourceType::View, resource_number)
                             .unwrap();
                     view = view::load_view(&resource);
-                    graphics.render_view(&view, group, cel);
                 }
                 _ => {}
             }
         }
+        graphics.draw_view(&view, group, cel);
+        graphics.present();
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
-        // todo!("loop throw cels / loop")
     }
 
     Ok(())

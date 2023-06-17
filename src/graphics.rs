@@ -88,14 +88,12 @@ impl Graphics {
     // What is the right thing to pass into draw_image since I only get the texture canvas in the loop
     // But it's not super useful since it's all point drawing
     //  -- refactor all the canvas bits in picture to something I can narrow down to a simple implementation
-    pub fn render_picture(&mut self, resource: &Resource) {
+    pub fn draw_picture(&mut self, resource: &Resource) {
         // TODO: better to just do the above with bytes and create the texture raw?
         // TODO: factor in menu bar -- currently full screen white, but should be white background for the picture viewport, black for the rest (when no menu bar)
         // TODO: don't necessarily want entire clear -> copy -> present logic here or if there are other steps for the current scene, currently an example
 
         let canvas = &mut self.canvas;
-        canvas.set_draw_color(Color::BLACK);
-        canvas.clear();
 
         let creator = canvas.texture_creator();
         // TODO: hardcoded dimensions defined in graphics
@@ -124,21 +122,21 @@ impl Graphics {
         canvas
             .copy(&texture, None, Rect::new(0, 10, 320, 190))
             .expect("Unable to copy texture to the canvas");
-
-        // TODO: we'll need to include other resources in here, like views in the animate call
-
-        canvas.present();
     }
 
-    pub fn render_view(&mut self, view: &View, group: usize, cel: usize) {
+    pub fn draw_view(&mut self, view: &View, group: usize, cel: usize) {
         // TODO: we don't want a method just to do this - how does view get included into a full scene render?
         let canvas = &mut self.canvas;
-        canvas.set_draw_color(Color::BLACK);
-        canvas.clear();
-
         view::draw_image(view, group, cel, &mut GraphicsContext { canvas });
+    }
 
-        canvas.present();
+    pub fn clear(&mut self) {
+        self.canvas.set_draw_color(Color::BLACK);
+        self.canvas.clear();
+    }
+
+    pub fn present(&mut self) {
+        self.canvas.present();
     }
 }
 

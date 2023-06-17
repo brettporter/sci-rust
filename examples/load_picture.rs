@@ -45,12 +45,17 @@ pub fn run(game: &Game) -> Result<(), String> {
 
     let resources = &game.resources;
 
+    graphics.clear();
+
     let mut resource_number = find_resource(resources, 0, true);
     let resource = resource::get_resource(resources, ResourceType::Pic, resource_number).unwrap();
-    graphics.render_picture(resource);
+    graphics.draw_picture(resource);
+
+    graphics.present();
 
     let mut event_pump = sdl_context.event_pump()?;
     'running: loop {
+        graphics.clear();
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -68,7 +73,9 @@ pub fn run(game: &Game) -> Result<(), String> {
                     let resource =
                         resource::get_resource(resources, ResourceType::Pic, resource_number)
                             .unwrap();
-                    graphics.render_picture(resource);
+                    graphics.clear();
+                    graphics.draw_picture(resource);
+                    graphics.present();
                 }
                 Event::KeyDown {
                     keycode: Some(Keycode::Right),
@@ -78,7 +85,9 @@ pub fn run(game: &Game) -> Result<(), String> {
                     let resource =
                         resource::get_resource(resources, ResourceType::Pic, resource_number)
                             .unwrap();
-                    graphics.render_picture(resource);
+                    graphics.clear();
+                    graphics.draw_picture(resource);
+                    graphics.present();
                 }
                 _ => {}
             }

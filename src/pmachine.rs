@@ -18,6 +18,7 @@ use crate::{
     graphics::Graphics,
     resource::{self, Resource, ResourceType},
     script::{Id, Script, StringDefinition},
+    view,
 };
 
 pub(crate) struct PMachine<'a> {
@@ -1300,7 +1301,7 @@ impl<'a> PMachine<'a> {
 
                 let resource =
                     resource::get_resource(&self.resources, ResourceType::Pic, pic_number).unwrap();
-                graphics.render_picture(resource);
+                graphics.draw_picture(resource);
 
                 // TODO: implement this
                 None
@@ -1598,7 +1599,6 @@ impl<'a> PMachine<'a> {
                 let ticks = params[1].to_i16();
                 info!("Kernel> Wait ticks: {:x}", ticks);
                 const TICK_DURATION: u32 = 1_000_000_000u32 / 60;
-                // TODO: currently 0 a lot, is that correct?
                 ::std::thread::sleep(Duration::new(0, ticks as u32 * TICK_DURATION));
                 // TODO: set return value
                 Some(Register::Value(0))
