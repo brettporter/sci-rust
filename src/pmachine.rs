@@ -50,33 +50,16 @@ struct DblListNode {
     list_index: usize,
 }
 
-struct StackFrame {
-    // Unwind position
-    unwind_pos: usize,
-
-    // Restore values of the parent caller
-    params_pos: usize,
-    num_params: u16,
-    temp_pos: usize,
-    stack_len: usize,
-
-    // Code point to return to
-    script_number: u16,
-    ip: usize,
-    obj: Id,
-
-    // Any selectors not yet called in the last send
-    remaining_selectors: VecDeque<usize>,
-}
-
 struct Heap {
     // TODO: should we have all these "caches", or have a single Heap?
     dbllist_cache: HashMap<usize, VecDeque<DblListNode>>,
+    script_local_variables: HashMap<u16, Vec<Register>>,
 }
 impl Heap {
     fn new() -> Heap {
         Heap {
             dbllist_cache: HashMap::new(),
+            script_local_variables: HashMap::new(),
         }
     }
 
@@ -85,27 +68,24 @@ impl Heap {
     }
 }
 
-// TODO: remove lifecycle by owning the bits of object instance needed for state
-// and looking up the rest when used
-// TODO: probably separate the registers from the heap but don't want to pass too many things around
-struct MachineState {
-    ip: usize, // instruction pointer
-    // TODO: should this just be current_obj data and ip offset modified?
-    // Don't need code stored here as we can look it up from the script
-    code: Box<Vec<u8>>, // currently executing script data
-    current_obj: Id,
+struct MachineRegisters {
     ax: Register,
-
-    // Stack information
-    // TODO: better approach than this to create a frame?
-    params_pos: usize,
-    temp_pos: usize,
-    num_params: u16,
+    // TODO: does this belong in execution context?
     rest_modifier: usize,
-    script: u16,
 }
 
-impl MachineState {
+struct ExecutionContext {
+    current_obj: Id,
+    script: u16, // This will be the execution script, which may differ from the current object
+    ip: usize,
+    code: Box<Vec<u8>>, // TODO: look for ways to just use the script data rather than cloning, should this just be current_obj data and ip offset modified?
+
+    stack_params: usize, // index into the stack where current params are stored
+    stack_temps: usize,  // index into the stack where current temps are stored
+    stack_unwind: usize, // index to unwind the stack to - usually params, but temps if there are further selectors to execute
+}
+
+impl ExecutionContext {
     fn read_u8(&mut self) -> u8 {
         let v = self.code[self.ip];
         self.ip += 1;
@@ -138,9 +118,8 @@ impl MachineState {
         v as u16
     }
 
-    fn update_script(&mut self, script: &Script) {
-        self.script = script.number;
-        self.code = script.data.clone(); // TODO: remove clone
+    fn num_params(&self) -> u16 {
+        (self.stack_temps - self.stack_params) as u16
     }
 }
 
@@ -442,9 +421,6 @@ impl<'a> PMachine<'a> {
         self.run(game_object, self.play_selector, graphics, event_manager);
     }
 
-    // TODO: consistent debug logging through here
-    // TODO: log symbols so we can more easily debug it = opcodes, variables, selectors, classes etc.
-    // TODO: we could use a separate kernel from the VM that has access to the services (graphics, events) but for now all in here
     fn run(
         &self,
         run_object: &ObjectInstance,
@@ -453,37 +429,17 @@ impl<'a> PMachine<'a> {
         event_manager: &mut EventManager,
     ) {
         let mut stack: Vec<Register> = Vec::new();
-        let mut call_stack: Vec<StackFrame> = Vec::new();
-
-        let (script_number, code_offset) = run_object.get_func_selector(selector);
-
-        debug!(
-            "Found selector {} with code offset {:x?} in script {}",
-            selector, code_offset, script_number
-        );
-
-        // TODO: better to do this by execution a machine function? Not happy with passing all the info in
-        // TODO: separate registers and stack frames, can keep some of this out of the send to selector function which is just creating a call
-        let s = self.initialise_script(script_number).unwrap();
-
-        let mut state = MachineState {
-            code: s.data.clone(), // TODO: remove clone
-            ip: code_offset as usize,
-            current_obj: run_object.id,
-            ax: Register::Undefined,
-            params_pos: 0,
-            num_params: 0,
-            temp_pos: 0,
-            rest_modifier: 0,
-            script: script_number,
-        };
 
         let mut heap = Heap::new();
+
+        let mut reg = MachineRegisters {
+            ax: Register::Undefined,
+            rest_modifier: 0,
+        };
 
         // Pre-load objects for all classes to avoid lazy init problems
         // TODO: may not need to retain class_scripts afterwards, consider simplifying
         // TODO: does this cover every script or need to enumerate resources?
-        let mut script_local_variables = HashMap::new();
 
         for script_number in self.resources.iter().filter_map(|(_, r)| {
             if r.resource_type == ResourceType::Script {
@@ -493,7 +449,8 @@ impl<'a> PMachine<'a> {
             }
         }) {
             if let Some(script) = self.initialise_script(script_number) {
-                script_local_variables.insert(script_number, init_script_local_variables(script));
+                heap.script_local_variables
+                    .insert(script_number, init_script_local_variables(script));
             }
         }
 
@@ -503,136 +460,187 @@ impl<'a> PMachine<'a> {
             }
         }
 
+        self.send_selector(
+            run_object,
+            run_object,
+            selector,
+            0,
+            &mut reg,
+            &mut stack,
+            &mut heap,
+            graphics,
+            event_manager,
+        );
+        // unwind the stack
+        debug!("Unwinding stack to 0 at end of run");
+        stack.truncate(0);
+    }
+
+    fn send_selector(
+        &self,
+        obj: &ObjectInstance,
+        send_obj: &ObjectInstance,
+        selector: u16,
+        stack_params: usize,
+        reg: &mut MachineRegisters,
+        stack: &mut Vec<Register>,
+        heap: &mut Heap,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
+    ) {
+        let (script_number, code_offset) = send_obj.get_func_selector(selector);
+
+        debug!(
+            "Found selector {} with code offset {:x?} in script {}",
+            selector, code_offset, script_number
+        );
+
+        let s = self.get_script(script_number);
+
+        let mut call_ctx = ExecutionContext {
+            current_obj: obj.id,
+            script: script_number,
+            ip: code_offset as usize,
+            stack_params,
+            stack_temps: stack.len(),
+            stack_unwind: stack.len(),
+            code: s.data.clone(), // TODO: avoid clone
+        };
+
+        self.execute(&mut call_ctx, reg, stack, heap, graphics, event_manager);
+    }
+
+    // TODO: look for ways to reduce parameter passing
+    fn execute(
+        &self,
+        ctx: &mut ExecutionContext,
+        reg: &mut MachineRegisters,
+        stack: &mut Vec<Register>,
+        heap: &mut Heap,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
+    ) {
+        // TODO: consistent debug logging through here
+        // TODO: log symbols so we can more easily debug it = opcodes, variables, selectors, classes etc.
+        // TODO: we could use a separate kernel from the VM that has access to the services (graphics, events) but for now all in here
         loop {
             // TODO: break this out into a method and ensure there are good unit tests for the behaviours (e.g. the issues with num_params being wrong for call methods)
-            let cmd = state.read_u8();
-            debug!("[{}@{:x}] Executing {:x}", state.script, state.ip - 1, cmd);
+            let cmd = ctx.read_u8();
+            debug!("[{}@{:x}] Executing {:x}", ctx.script, ctx.ip - 1, cmd);
             // TODO: do we do constants for opcodes? Do we enumberate the B / W variants or add tooling for this?
             // TODO: can we simplify all the unwrapping
             match cmd {
                 0x02 | 0x03 => {
                     // add
-                    state.ax.add_reg(stack.pop().unwrap());
+                    reg.ax.add_reg(stack.pop().unwrap());
                 }
                 0x04 | 0x05 => {
                     // sub
                     // TODO: do we want methods like add for register to trim these?
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() - state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() - reg.ax.to_i16());
                 }
                 0x06 | 0x07 => {
                     // mul
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() * state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() * reg.ax.to_i16());
                 }
                 0x08 | 0x09 => {
                     // div
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() / state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() / reg.ax.to_i16());
                 }
                 0x0c | 0x0d => {
                     // shr
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() >> state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() >> reg.ax.to_i16());
                 }
                 0x12 | 0x13 => {
                     // and
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() & state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() & reg.ax.to_i16());
                 }
                 0x14 | 0x15 => {
                     // or
-                    state.ax = Register::Value(stack.pop().unwrap().to_i16() | state.ax.to_i16());
+                    reg.ax = Register::Value(stack.pop().unwrap().to_i16() | reg.ax.to_i16());
                 }
                 0x18 | 0x19 => {
                     // not
-                    state.ax = Register::Value(if state.ax.is_zero_or_null() { 1 } else { 0 });
+                    reg.ax = Register::Value(if reg.ax.is_zero_or_null() { 1 } else { 0 });
                 }
                 0x1a | 0x1b => {
                     // eq?
-                    state.ax = Register::Value(if state.ax == stack.pop().unwrap() {
-                        1
-                    } else {
-                        0
-                    });
+                    reg.ax = Register::Value(if reg.ax == stack.pop().unwrap() { 1 } else { 0 });
                 }
                 0x1c | 0x1d => {
                     // ne?
-                    state.ax = Register::Value(if state.ax != stack.pop().unwrap() {
+                    reg.ax = Register::Value(if reg.ax != stack.pop().unwrap() { 1 } else { 0 });
+                }
+                0x1e | 0x1f => {
+                    // gt?
+                    reg.ax = Register::Value(if stack.pop().unwrap().to_i16() > reg.ax.to_i16() {
                         1
                     } else {
                         0
                     });
                 }
-                0x1e | 0x1f => {
-                    // gt?
-                    state.ax =
-                        Register::Value(if stack.pop().unwrap().to_i16() > state.ax.to_i16() {
-                            1
-                        } else {
-                            0
-                        });
-                }
                 0x20 | 0x21 => {
                     // ge?
-                    state.ax =
-                        Register::Value(if stack.pop().unwrap().to_i16() >= state.ax.to_i16() {
-                            1
-                        } else {
-                            0
-                        });
+                    reg.ax = Register::Value(if stack.pop().unwrap().to_i16() >= reg.ax.to_i16() {
+                        1
+                    } else {
+                        0
+                    });
                 }
                 0x22 | 0x23 => {
                     // lt?
-                    state.ax =
-                        Register::Value(if stack.pop().unwrap().to_i16() < state.ax.to_i16() {
-                            1
-                        } else {
-                            0
-                        });
+                    reg.ax = Register::Value(if stack.pop().unwrap().to_i16() < reg.ax.to_i16() {
+                        1
+                    } else {
+                        0
+                    });
                 }
                 0x24 | 0x25 => {
                     // le?
-                    state.ax =
-                        Register::Value(if stack.pop().unwrap().to_i16() <= state.ax.to_i16() {
-                            1
-                        } else {
-                            0
-                        });
+                    reg.ax = Register::Value(if stack.pop().unwrap().to_i16() <= reg.ax.to_i16() {
+                        1
+                    } else {
+                        0
+                    });
                 }
                 0x2e => {
                     // bt W
-                    let pos = state.read_i16();
-                    if state.ax.to_i16() != 0 {
-                        state.jump(pos);
+                    let pos = ctx.read_i16();
+                    if reg.ax.to_i16() != 0 {
+                        ctx.jump(pos);
                     }
                 }
                 0x30 => {
                     // bnt W
-                    let pos = state.read_i16();
-                    if state.ax.is_zero_or_null() {
-                        state.jump(pos);
+                    let pos = ctx.read_i16();
+                    if reg.ax.is_zero_or_null() {
+                        ctx.jump(pos);
                     }
                 }
                 0x32 => {
                     // jmp W
-                    let pos = state.read_i16();
-                    state.jump(pos);
+                    let pos = ctx.read_i16();
+                    ctx.jump(pos);
                 }
                 0x34 => {
                     // ldi W
-                    state.ax = Register::Value(state.read_i16());
+                    reg.ax = Register::Value(ctx.read_i16());
                 }
                 0x35 => {
                     // ldi B
-                    state.ax = Register::Value(state.read_i8() as i16);
+                    reg.ax = Register::Value(ctx.read_i8() as i16);
                 }
                 0x36 => {
                     // push
-                    stack.push(state.ax);
+                    stack.push(reg.ax);
                 }
                 0x38 => {
                     // pushi W
-                    stack.push(Register::Value(state.read_i16()));
+                    stack.push(Register::Value(ctx.read_i16()));
                 }
                 0x39 => {
                     // pushi B
-                    stack.push(Register::Value(state.read_i8() as i16));
+                    stack.push(Register::Value(ctx.read_i8() as i16));
                 }
                 0x3a | 0x3b => {
                     // toss
@@ -645,53 +653,44 @@ impl<'a> PMachine<'a> {
                 0x3f => {
                     // link B
                     // todo!(): this may not be correct - in some cases it will be a single string of some length.
-                    let num_variables = state.read_u8();
+                    let num_variables = ctx.read_u8();
                     for _ in 0..num_variables {
                         stack.push(Register::Undefined);
                     }
                 }
                 0x40 => {
                     // call W relpos, B framesize
-                    let rel_pos = state.read_i16();
+                    let rel_pos = ctx.read_i16();
 
-                    let stackframe_size = state.read_u8() as usize;
+                    let stackframe_size = ctx.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start =
-                        stackframe_end - (stackframe_size / 2 + 1 + state.rest_modifier);
-                    if state.rest_modifier > 0 {
-                        stack[stackframe_start].add(state.rest_modifier as i16);
-                        state.rest_modifier = 0;
+                        stackframe_end - (stackframe_size / 2 + 1 + reg.rest_modifier);
+                    if reg.rest_modifier > 0 {
+                        // Update number of parameters within the call stack frame
+                        stack[stackframe_start].add(reg.rest_modifier as i16);
+                        reg.rest_modifier = 0;
                     }
 
-                    call_stack.push(StackFrame {
-                        // Unwind position
-                        unwind_pos: stackframe_start,
-                        // Saving these to return to
-                        params_pos: state.params_pos,
-                        temp_pos: state.temp_pos,
-                        num_params: state.num_params,
-                        stack_len: stackframe_end,
-                        script_number: state.script,
-                        ip: state.ip,
-                        obj: state.current_obj,
-                        remaining_selectors: VecDeque::new(),
-                    });
-
-                    // As opposed to send, does not start with selector
-                    state.num_params = stack[stackframe_start].to_u16();
-
-                    state.jump(rel_pos);
-                    state.params_pos = stackframe_start; // argc is included
-                    state.temp_pos = stackframe_end;
+                    let code = &ctx.code;
+                    let mut call_ctx = ExecutionContext {
+                        stack_params: stackframe_start, // argc is included
+                        stack_temps: stack.len(),
+                        stack_unwind: stackframe_start,
+                        code: code.clone(), // TODO: remove
+                        ..*ctx
+                    };
+                    call_ctx.jump(rel_pos);
+                    self.execute(&mut call_ctx, reg, stack, heap, graphics, event_manager);
                 }
                 0x43 => {
                     // callk B
-                    let k_func = state.read_u8();
-                    let k_params = state.read_u8() as usize / 2;
-                    let stackframe_start = stack.len() - (k_params + 1 + state.rest_modifier);
-                    if state.rest_modifier > 0 {
-                        stack[stackframe_start].add(state.rest_modifier as i16);
-                        state.rest_modifier = 0;
+                    let k_func = ctx.read_u8();
+                    let k_params = ctx.read_u8() as usize / 2;
+                    let stackframe_start = stack.len() - (k_params + 1 + reg.rest_modifier);
+                    if reg.rest_modifier > 0 {
+                        stack[stackframe_start].add(reg.rest_modifier as i16);
+                        reg.rest_modifier = 0;
                     }
                     let params = &stack[stackframe_start..];
 
@@ -701,136 +700,91 @@ impl<'a> PMachine<'a> {
                     // dump_stack(&stack, &state);
 
                     // call command, put return value into ax
-                    if let Some(value) =
-                        self.call_kernel_command(&mut heap, graphics, k_func, params)
-                    {
-                        state.ax = value;
+                    if let Some(value) = self.call_kernel_command(heap, graphics, k_func, params) {
+                        reg.ax = value;
                     }
 
                     // todo!("Temporary - currently just setting this to quit so it doesn't infinite loop");
                     if k_func == 0x45 {
                         if let Some(quit) = event_manager.poll() {
                             if quit {
-                                script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[4] =
+                                heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[4] =
                                     Register::Value(1);
                             }
                         }
                     }
 
                     // unwind stack
+                    debug!("Unwinding stack to {stackframe_start} after Kernel function");
                     stack.truncate(stackframe_start);
                 }
                 0x45 => {
                     // callb B dispindex, B framesize
-                    let dispatch_index = state.read_u8() as u16;
-                    let stackframe_size = state.read_u8() as usize;
+                    let dispatch_index = ctx.read_u8() as u16;
+                    let stackframe_size = ctx.read_u8() as usize;
                     self.call_dispatch_index(
+                        ctx,
                         SCRIPT_MAIN,
                         dispatch_index,
                         stackframe_size,
-                        &mut stack,
-                        &mut state,
-                        &mut call_stack,
+                        stack,
+                        reg,
+                        heap,
+                        graphics,
+                        event_manager,
                     );
                 }
                 0x46 => {
                     // calle W script, W dispindex, B framesize
-                    let script_num = state.read_u16();
-                    let dispatch_index = state.read_u16();
-                    let stackframe_size = state.read_u8() as usize;
+                    let script_num = ctx.read_u16();
+                    let dispatch_index = ctx.read_u16();
+                    let stackframe_size = ctx.read_u8() as usize;
 
                     self.call_dispatch_index(
+                        ctx,
                         script_num,
                         dispatch_index,
                         stackframe_size,
-                        &mut stack,
-                        &mut state,
-                        &mut call_stack,
+                        stack,
+                        reg,
+                        heap,
+                        graphics,
+                        event_manager,
                     );
                 }
                 0x48 | 0x49 => {
                     // ret
-                    if call_stack.is_empty() {
-                        return;
-                    }
+                    debug!("Return from function -> {}@{:x}", ctx.script, ctx.ip);
 
-                    let frame = call_stack.pop().unwrap();
-                    debug!(
-                        "Return from function -> {}@{:x}",
-                        frame.script_number, frame.ip
-                    );
-
-                    let previous_obj = self.get_object(state.current_obj);
-                    let script = self.get_script(frame.script_number);
-                    state.update_script(script);
-                    state.ip = frame.ip;
-                    state.current_obj = frame.obj;
-
-                    state.params_pos = frame.params_pos;
-                    state.temp_pos = frame.temp_pos;
-                    state.num_params = frame.num_params;
                     // unwind stack to previous state
-                    stack.truncate(frame.stack_len);
-
-                    let mut running_function = false;
-                    let remaining_selectors = &mut frame.remaining_selectors.clone(); // TODO: is clone needed?
-                    while !remaining_selectors.is_empty() {
-                        let obj = previous_obj;
-                        let start = frame.unwind_pos + remaining_selectors.pop_front().unwrap();
-                        let end = stack.len();
-                        let selector = stack[start].to_u16();
-                        let pos = start + 1;
-                        let np = stack[pos].to_u16();
-
-                        // dump_stack(&stack, &state);
-
-                        if let Some(frame) = self.send_to_selector(
-                            &mut state,
-                            &stack[pos..=pos + np as usize],
-                            obj,
-                            obj, // TODO: is this right for self with multiple selectors?
-                            selector,
-                            np,
-                            frame.unwind_pos,
-                            end,
-                            pos,
-                            remaining_selectors.clone(), // TODO: is clone needed again?
-                        ) {
-                            state.current_obj = obj.id;
-                            call_stack.push(frame);
-                            running_function = true;
-                            break;
-                        }
-                    }
-                    if !running_function {
-                        // Unwind stack as ret will not be called
-                        stack.truncate(frame.unwind_pos);
-                    }
+                    debug!("Unwinding stack to {}", ctx.stack_unwind);
+                    stack.truncate(ctx.stack_unwind);
+                    return;
                 }
                 0x4a | 0x4b | 0x54 | 0x55 | 0x57 => {
                     // TODO: factor out a method and make this separate again. Curently hard with local variables in here.
-                    let current_obj = self.get_object(state.current_obj);
+                    let current_obj = self.get_object(ctx.current_obj);
                     let (obj, send_obj) = if cmd == 0x54 || cmd == 0x55 {
                         // self B selector
                         (current_obj, current_obj)
                     } else if cmd == 0x57 {
                         // super B class B stackframe
-                        let class_num = state.read_u8() as u16;
+                        let class_num = ctx.read_u8() as u16;
                         let class = self.get_class_definition(class_num).unwrap();
                         (current_obj, self.get_object(class.id))
                     } else {
                         // send B
-                        let obj = self.get_object(state.ax.to_obj());
+                        let obj = self.get_object(reg.ax.to_obj());
                         (obj, obj)
                     };
 
                     // TODO: instead of just pushing onto an execution stack and looping
                     // it would be good to start a new context like run so we can just pop the whole thing on return
 
-                    let stackframe_size = state.read_u8() as usize;
+                    let stackframe_size = ctx.read_u8() as usize;
                     let stackframe_end = stack.len();
                     let stackframe_start =
-                        stackframe_end - (stackframe_size / 2 + state.rest_modifier);
+                        stackframe_end - (stackframe_size / 2 + reg.rest_modifier);
 
                     // dump_stack(&stack, &state);
 
@@ -839,74 +793,77 @@ impl<'a> PMachine<'a> {
                     while read_selectors_idx < stackframe_end - stackframe_start {
                         let np = stack[stackframe_start + read_selectors_idx + 1].to_u16();
                         selector_offsets.push_back(read_selectors_idx);
-                        read_selectors_idx += np as usize + 2 + state.rest_modifier;
-                        if state.rest_modifier > 0 {
+                        read_selectors_idx += np as usize + 2 + reg.rest_modifier;
+                        if reg.rest_modifier > 0 {
                             // Only support rest modifier for one selector, otherwise behaviour is undefined
                             assert!(read_selectors_idx == stackframe_end - stackframe_start);
                             // add rest_modifier to number of parameters on the stack
-                            stack[stackframe_start + 1].add(state.rest_modifier as i16);
-                            state.rest_modifier = 0;
+                            stack[stackframe_start + 1].add(reg.rest_modifier as i16);
+                            reg.rest_modifier = 0;
                         }
                     }
 
                     debug!(
-                        "Sending to selectors {:?} for {} to {}",
-                        selector_offsets, obj.name, send_obj.name
+                        "Sending to selectors {:x?} for {} to {}",
+                        selector_offsets
+                            .iter()
+                            .map(|o| stack[stackframe_start + o].to_u16())
+                            .collect_vec(),
+                        obj.name,
+                        send_obj.name
                     );
-                    while !selector_offsets.is_empty() {
-                        let start = stackframe_start + selector_offsets.pop_front().unwrap();
+
+                    for offset in &selector_offsets {
+                        let start = stackframe_start + offset;
                         let selector = stack[start].to_u16();
-                        let pos = start + 1;
-                        let np = stack[pos].to_u16();
-                        if let Some(frame) = self.send_to_selector(
-                            &mut state,
-                            &stack[pos..=pos + np as usize],
+                        assert_eq!(stackframe_end, stack.len());
+                        self.send_to_selector(
                             obj,
                             send_obj,
                             selector,
-                            np,
-                            stackframe_start,
-                            stackframe_end,
-                            pos,
-                            selector_offsets.clone(), // TODO: is clone needed?
-                        ) {
-                            state.current_obj = obj.id;
-                            call_stack.push(frame);
-                            break;
-                        }
-                        if selector_offsets.is_empty() {
-                            // Unwind stack as ret will not be called
-                            stack.truncate(stackframe_start);
-                        }
+                            start + 1,
+                            reg,
+                            stack,
+                            heap,
+                            graphics,
+                            event_manager,
+                        );
                     }
+
+                    // unwind the parameters as well
+                    debug!("Unwinding stack to {stackframe_start} after all selectors {:x?} for {} to {}",
+                        selector_offsets.iter().map(|o| stack[stackframe_start + o].to_u16()).collect_vec(),
+                        obj.name,
+                        send_obj.name);
+                    stack.truncate(stackframe_start);
                 }
                 0x51 => {
                     // class B
-                    let class_num = state.read_u8() as u16;
+                    let class_num = ctx.read_u8() as u16;
                     let class = self.get_class_definition(class_num).unwrap();
                     let obj = self.get_object(class.id);
 
                     // TODO: do we need to change script?
-                    state.ax = Register::Object(obj.id);
+                    reg.ax = Register::Object(obj.id);
                 }
                 0x59 => {
                     // &rest B paramindex
-                    let index = state.read_u8() as usize;
-                    let rest = &stack[state.params_pos + index..state.temp_pos];
-                    state.rest_modifier = rest.len();
-                    stack = [&stack, rest].concat();
+                    let index = ctx.read_u8() as usize;
+                    let rest = &stack[ctx.stack_params + index..ctx.stack_temps];
+                    reg.rest_modifier = rest.len();
+                    *stack = [&stack, rest].concat();
                 }
                 0x5b => {
                     // lea B type, B index
-                    let var_type = state.read_i8();
-                    let mut var_index = state.read_u8() as i16;
+                    let var_type = ctx.read_i8();
+                    let mut var_index = ctx.read_u8() as i16;
 
                     // TODO: use bitflags
                     let use_acc = (var_type & 0b10000) != 0;
                     let var_type_num = var_type & 0b110 >> 1;
 
                     if use_acc {
-                        var_index += state.ax.to_i16();
+                        var_index += reg.ax.to_i16();
                         assert!(var_index >= 0);
                     }
 
@@ -914,81 +871,75 @@ impl<'a> PMachine<'a> {
                         FromPrimitive::from_u16(var_type_num as u16).unwrap();
 
                     // TODO: confirm that this is correct - get the variable "address", not the value
-                    state.ax = Register::Variable(variable_type, var_index);
+                    reg.ax = Register::Variable(variable_type, var_index);
                 }
                 0x5c | 0x5d => {
                     // selfID
-                    state.ax = Register::Object(state.current_obj);
+                    reg.ax = Register::Object(ctx.current_obj);
                 }
                 0x63 => {
                     // pToa B offset
-                    let offset = state.read_u8();
-                    debug!(
-                        "property @offset {offset} to acc for {:?}",
-                        state.current_obj
-                    );
-                    state.ax = self
-                        .get_object(state.current_obj)
+                    let offset = ctx.read_u8();
+                    debug!("property @offset {offset} to acc for {:?}", ctx.current_obj);
+                    reg.ax = self
+                        .get_object(ctx.current_obj)
                         .get_property_by_offset(offset);
                 }
                 0x65 => {
                     // aTop B offset
-                    let offset = state.read_u8();
-                    debug!(
-                        "acc to property @offset {offset} for {:?}",
-                        state.current_obj
-                    );
-                    self.get_object(state.current_obj)
-                        .set_property_by_offset(offset, state.ax);
+                    let offset = ctx.read_u8();
+                    debug!("acc to property @offset {offset} for {:?}", ctx.current_obj);
+                    self.get_object(ctx.current_obj)
+                        .set_property_by_offset(offset, reg.ax);
                 }
                 0x67 => {
                     // pTos B offset
-                    let offset = state.read_u8();
+                    let offset = ctx.read_u8();
                     debug!("property @offset {offset} to stack");
                     stack.push(
-                        self.get_object(state.current_obj)
+                        self.get_object(ctx.current_obj)
                             .get_property_by_offset(offset),
                     );
                 }
                 0x6b => {
                     // ipToa B offset
-                    let offset = state.read_u8();
+                    let offset = ctx.read_u8();
                     debug!("increment property @offset {offset} to acc");
-                    state.ax = self
-                        .get_object(state.current_obj)
+                    reg.ax = self
+                        .get_object(ctx.current_obj)
                         .get_property_by_offset(offset);
-                    state.ax.add(1);
-                    self.get_object(state.current_obj)
-                        .set_property_by_offset(offset, state.ax);
+                    reg.ax.add(1);
+                    self.get_object(ctx.current_obj)
+                        .set_property_by_offset(offset, reg.ax);
                 }
                 0x6d => {
                     // dpToa B offset
-                    let offset = state.read_u8();
+                    let offset = ctx.read_u8();
                     debug!("increment property @offset {offset} to acc");
-                    state.ax = self
-                        .get_object(state.current_obj)
+                    reg.ax = self
+                        .get_object(ctx.current_obj)
                         .get_property_by_offset(offset);
-                    state.ax.sub(1);
-                    self.get_object(state.current_obj)
-                        .set_property_by_offset(offset, state.ax);
+                    reg.ax.sub(1);
+                    self.get_object(ctx.current_obj)
+                        .set_property_by_offset(offset, reg.ax);
                 }
                 0x72 => {
                     // lofsa W
-                    let offset = state.read_i16();
+                    let offset = ctx.read_i16();
                     debug!("Load offset {} to acc", offset);
-                    assert!(state.ip <= i16::MAX as usize); // Make sure this isn't a bad cast
+                    assert!(ctx.ip <= i16::MAX as usize); // Make sure this isn't a bad cast
 
                     // Need to check what it is at this address
                     // TODO: can we generalise what the script gives back by a type?
-                    let v = (state.ip as i16 + offset) as usize;
-                    let script = self.get_script(state.script);
-                    state.ax = if let Some(obj) = script.get_object_by_offset(v) {
+                    let v = (ctx.ip as i16 + offset) as usize;
+                    let script = self.get_script(ctx.script);
+                    reg.ax = if let Some(obj) = script.get_object_by_offset(v) {
                         Register::Object(self.initialise_object(obj).id)
                     } else if let Some(s) = script.get_string_by_offset(v) {
                         Register::String(self.initialise_string(s).id, 0)
                     } else if let Some(s) = script.get_get_said_by_offset(v) {
                         // todo!("support 'said'");
-                        Register::Address(state.script, s.id.offset)
+                        Register::Address(ctx.script, s.id.offset)
                     } else {
                         // TODO: may need to put a whole lot of handles into script?
                         todo!("Unknown method loading from address {:x}", v);
@@ -1008,137 +959,141 @@ impl<'a> PMachine<'a> {
                 }
                 0x7c => {
                     // pushSelf
-                    stack.push(Register::Object(state.current_obj));
+                    stack.push(Register::Object(ctx.current_obj));
                 }
                 // TODO: generalise this to all types 0x80..0xff
                 0x81 => {
                     // lag B
-                    let var = state.read_u8() as usize;
+                    let var = ctx.read_u8() as usize;
                     debug!("load global {} to acc", var);
-                    state.ax = script_local_variables[&SCRIPT_MAIN][var];
+                    reg.ax = heap.script_local_variables[&SCRIPT_MAIN][var];
                 }
                 0x85 => {
                     // lat B
-                    let var = state.read_u8();
+                    let var = ctx.read_u8();
                     debug!("load temp {} to acc", var);
-                    state.ax = stack[state.temp_pos + var as usize];
+                    reg.ax = stack[ctx.stack_temps + var as usize];
                 }
                 0x87 => {
                     // lap B
-                    let var = state.read_u8() as u16;
+                    let var = ctx.read_u8() as u16;
                     debug!("load parameter {} to acc", var);
 
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    if var <= state.num_params {
-                        state.ax = stack[state.params_pos + var as usize];
+                    if var <= ctx.num_params() {
+                        reg.ax = stack[ctx.stack_params + var as usize];
                     }
                 }
                 0x89 => {
                     // lsg B
-                    let var = state.read_u8() as usize;
+                    let var = ctx.read_u8() as usize;
                     debug!("load global {} to stack", var);
-                    stack.push(script_local_variables[&SCRIPT_MAIN][var]);
+                    stack.push(heap.script_local_variables[&SCRIPT_MAIN][var]);
                 }
                 0x8b => {
                     // lsl B
-                    let var = state.read_u8();
+                    let var = ctx.read_u8();
                     debug!("load local {} to stack", var);
-                    stack.push(script_local_variables.get(&state.script).unwrap()[var as usize]);
+                    stack.push(heap.script_local_variables.get(&ctx.script).unwrap()[var as usize]);
                 }
                 0x8d => {
                     // lst B
-                    let var = state.read_u8();
+                    let var = ctx.read_u8();
                     debug!("load temp {} to stack", var);
-                    stack.push(stack[state.temp_pos + var as usize]);
+                    stack.push(stack[ctx.stack_temps + var as usize]);
                 }
                 0x8f => {
                     // lsp B
-                    let var = state.read_u8() as u16;
+                    let var = ctx.read_u8() as u16;
                     debug!("load parameter {} to stack", var);
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    if var <= state.num_params {
-                        stack.push(stack[state.params_pos + var as usize]);
+                    if var <= ctx.num_params() {
+                        stack.push(stack[ctx.stack_params + var as usize]);
                     }
                 }
                 0x97 => {
                     // lapi B
-                    let var = state.read_u8() as u16 + state.ax.to_u16();
+                    let var = ctx.read_u8() as u16 + reg.ax.to_u16();
                     debug!("load parameter {} to acc", var);
                     // TODO: It'd be nice if the stack frame didn't permit this so we don't have to check
-                    if var <= state.num_params {
-                        state.ax = stack[state.params_pos + var as usize];
+                    if var <= ctx.num_params() {
+                        reg.ax = stack[ctx.stack_params + var as usize];
                     }
                 }
                 0x98 => {
                     // lsgi W
-                    let var = state.read_u16() + state.ax.to_u16();
+                    let var = ctx.read_u16() + reg.ax.to_u16();
                     debug!("load global {} to stack", var);
-                    stack.push(script_local_variables[&SCRIPT_MAIN][var as usize]);
+                    stack.push(heap.script_local_variables[&SCRIPT_MAIN][var as usize]);
                 }
                 0x9f => {
                     // lspi B
-                    let var = state.read_u8() as u16 + state.ax.to_u16();
+                    let var = ctx.read_u8() as u16 + reg.ax.to_u16();
                     debug!("load parameter {} to stack", var);
-                    stack.push(stack[state.params_pos + var as usize]);
+                    stack.push(stack[ctx.stack_params + var as usize]);
                 }
                 0xa0 => {
                     // sag W
-                    let var = state.read_u16();
+                    let var = ctx.read_u16();
                     debug!("store accumulator to global {}", var);
-                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] = state.ax;
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] =
+                        reg.ax;
                 }
                 0xa1 => {
                     // sag B
-                    let var = state.read_u8();
+                    let var = ctx.read_u8();
                     debug!("store accumulator to global {}", var);
-                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] = state.ax;
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] =
+                        reg.ax;
                 }
                 0xa3 => {
                     // sal B
-                    let var = state.read_u8();
+                    let var = ctx.read_u8();
                     debug!("store accumulator to local {}", var);
-                    script_local_variables.get_mut(&state.script).unwrap()[var as usize] = state.ax;
+                    heap.script_local_variables.get_mut(&ctx.script).unwrap()[var as usize] =
+                        reg.ax;
                 }
                 0xa5 => {
                     // sat B
-                    let var = state.read_u8() as usize;
+                    let var = ctx.read_u8() as usize;
                     debug!("store accumulator to temp {}", var);
-                    stack[state.temp_pos + var] = state.ax;
+                    stack[ctx.stack_temps + var] = reg.ax;
                 }
                 0xa7 => {
                     // sap B
-                    let var = state.read_u8() as usize;
+                    let var = ctx.read_u8() as usize;
                     debug!("store accumulator to param {}", var);
-                    stack[state.params_pos + var] = state.ax;
+                    stack[ctx.stack_params + var] = reg.ax;
                 }
                 0xb0 => {
                     // sagi W
-                    let var = state.read_u16();
-                    let idx = var + state.ax.to_u16();
-                    debug!("store accumulator {} to global {}", state.ax.to_u16(), idx);
-                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[idx as usize] = state.ax;
+                    let var = ctx.read_u16();
+                    let idx = var + reg.ax.to_u16();
+                    debug!("store accumulator {} to global {}", reg.ax.to_u16(), idx);
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[idx as usize] =
+                        reg.ax;
                 }
                 0xc1 => {
                     // +ag B
-                    let var = state.read_u8() as usize;
-                    script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].add(1);
-                    state.ax = script_local_variables[&SCRIPT_MAIN][var];
+                    let var = ctx.read_u8() as usize;
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].add(1);
+                    reg.ax = heap.script_local_variables[&SCRIPT_MAIN][var];
                 }
                 0xc5 => {
                     // +at B
-                    let var = state.read_u8() as usize;
-                    let idx = state.temp_pos + var;
+                    let var = ctx.read_u8() as usize;
+                    let idx = ctx.stack_temps + var;
                     let v = stack[idx].to_i16() + 1;
                     stack[idx] = Register::Value(v);
-                    state.ax = stack[idx];
+                    reg.ax = stack[idx];
                 }
                 0xe5 => {
                     // -at B
-                    let var = state.read_u8() as usize;
-                    let idx = state.temp_pos + var;
+                    let var = ctx.read_u8() as usize;
+                    let idx = ctx.stack_temps + var;
                     let v = stack[idx].to_i16() - 1;
                     stack[idx] = Register::Value(v);
-                    state.ax = stack[idx];
+                    reg.ax = stack[idx];
                 }
                 _ => {
                     todo!("Unknown command 0x{:x}", cmd);
@@ -1196,63 +1151,49 @@ impl<'a> PMachine<'a> {
 
     fn send_to_selector(
         &self,
-        state: &mut MachineState,
-        params: &[Register],
         obj: &ObjectInstance,
         send_obj: &ObjectInstance,
         selector: u16,
-        num_params: u16,
-        // TODO: remove these params
-        stackframe_start: usize,
-        stackframe_end: usize,
-        params_pos: usize,
-        selector_offsets: VecDeque<usize>,
-    ) -> Option<StackFrame> {
+        stack_params: usize,
+        reg: &mut MachineRegisters,
+        stack: &mut Vec<Register>,
+        heap: &mut Heap,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
+    ) {
+        let num_params = stack[stack_params].to_u16();
         if obj.has_var_selector(selector) {
             // Variable
             if num_params == 0 {
                 // get
                 debug!("Get variable by selector {:x} on {}", selector, obj.name);
-                state.ax = obj.get_property(selector);
+                reg.ax = obj.get_property(selector);
             } else {
                 debug!(
                     "Set variable by selector {:x} on {} to {:?}",
-                    selector, obj.name, state.ax
+                    selector, obj.name, reg.ax
                 );
-                obj.set_property(selector, params[1]);
+                obj.set_property(selector, stack[stack_params + 1]);
             }
-            None
         } else {
             // Function
+            let params = &stack[stack_params..=stack_params + num_params as usize];
             debug!(
                 "Call send on function {:x} for {} to {} params: {:?}",
                 selector, obj.name, send_obj.name, params
             );
-            let (script_number, code_offset) = send_obj.get_func_selector(selector);
-            debug!("    -> {script_number} @{:x}", code_offset);
 
-            let frame = StackFrame {
-                // Unwind position
-                unwind_pos: stackframe_start,
-                // Saving these to return to
-                params_pos: state.params_pos,
-                temp_pos: state.temp_pos,
-                num_params: state.num_params,
-                stack_len: stackframe_end,
-                script_number: state.script,
-                ip: state.ip,
-                obj: state.current_obj,
-                remaining_selectors: selector_offsets,
-            };
-
-            let script = self.get_script(script_number);
-            state.update_script(script);
-            state.ip = code_offset as usize;
-
-            state.params_pos = params_pos;
-            state.temp_pos = stackframe_end;
-            state.num_params = num_params;
-            Some(frame)
+            self.send_selector(
+                obj,
+                send_obj,
+                selector,
+                stack_params,
+                reg,
+                stack,
+                heap,
+                graphics,
+                event_manager,
+            );
         }
     }
 
@@ -1353,21 +1294,25 @@ impl<'a> PMachine<'a> {
 
                 if list_ptr.is_zero_or_null() {
                     // TODO: what behaviour should there be if list is not given?
+                    // Docs say: Animate will dispose lastCast (internal kernel knowledge of the cast during
+                    // the previous animation cycle) and redraw the picture, if needed.
                     return None;
                 }
 
                 // TODO: if background picture not drawn, animate with style from kDrawPic
                 info!("Kernel> Animate cast: {:?} cycle: {:?}", list_ptr, cycle);
 
-                let cast = heap.dbllist_cache.get(&list_ptr.to_dbllist()).unwrap();
+                let cast = heap
+                    .dbllist_cache
+                    .get(&list_ptr.to_dbllist())
+                    .unwrap()
+                    .iter()
+                    .map(|c| self.get_object(c.value));
 
-                // TODO: map to objects?
-                for c in cast {
-                    let o = self.get_object(c.value);
-                    debug!("{:?}", o);
+                if cycle {
+                    // todo!("animate cycle");
+                    // TODO: call doit on each cast member
                 }
-
-                // TODO: call doit if cycle is set
 
                 // todo!("animate");
 
@@ -1756,44 +1701,36 @@ impl<'a> PMachine<'a> {
 
     fn call_dispatch_index(
         &self,
+        ctx: &ExecutionContext,
         script_num: u16,
         dispatch_index: u16,
         stackframe_size: usize,
-        stack: &mut [Register],
-        state: &mut MachineState,
-        call_stack: &mut Vec<StackFrame>,
+        stack: &mut Vec<Register>,
+        reg: &mut MachineRegisters,
+        heap: &mut Heap,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
     ) {
         let stackframe_end = stack.len();
-        let stackframe_start = stackframe_end - (stackframe_size / 2 + 1 + state.rest_modifier);
-        if state.rest_modifier > 0 {
-            stack[stackframe_start].add(state.rest_modifier as i16);
-            state.rest_modifier = 0;
+        let stackframe_start = stackframe_end - (stackframe_size / 2 + 1 + reg.rest_modifier);
+        if reg.rest_modifier > 0 {
+            stack[stackframe_start].add(reg.rest_modifier as i16);
+            reg.rest_modifier = 0;
         }
-
-        call_stack.push(StackFrame {
-            // Unwind position
-            unwind_pos: stackframe_start,
-            // Saving these to return to
-            params_pos: state.params_pos,
-            temp_pos: state.temp_pos,
-            num_params: state.num_params,
-            stack_len: stack.len(),
-            script_number: state.script,
-            ip: state.ip,
-            obj: state.current_obj,
-            remaining_selectors: VecDeque::new(),
-        });
-
-        // As opposed to send, does not start with selector
-        state.num_params = stack[stackframe_start].to_u16();
 
         // Switch to script
         let script = self.get_script(script_num);
-        state.update_script(script);
-        state.ip = script.get_dispatch_address(dispatch_index) as usize;
 
-        state.params_pos = stackframe_start; // argc is included
-        state.temp_pos = stackframe_end;
+        let mut call_ctx = ExecutionContext {
+            script: script_num,
+            ip: script.get_dispatch_address(dispatch_index) as usize,
+            stack_params: stackframe_start, // argc is included
+            stack_temps: stack.len(),
+            stack_unwind: stackframe_start,
+            code: script.data.clone(), // TODO: remove
+            ..*ctx
+        };
+        self.execute(&mut call_ctx, reg, stack, heap, graphics, event_manager);
     }
 
     fn get_object(&self, id: Id) -> &ObjectInstance {
@@ -1842,21 +1779,23 @@ fn init_script_local_variables(script: &Script) -> Vec<Register> {
         .collect_vec()
 }
 
-#[allow(dead_code)]
-fn dump_stack(stack: &Vec<Register>, state: &MachineState) {
+fn _dump_stack(stack: &Vec<Register>, ctx: &ExecutionContext) {
     // TODO: maybe show call stack too
     for i in 0..stack.len() {
         // TODO: not tracking where temp ends and these are pushing new values for send
-        let indent = if i == state.temp_pos {
-            "temp ===>"
-        } else if i == state.params_pos {
-            "params =>"
+        let indent = if i == ctx.stack_temps {
+            if i != ctx.stack_params {
+                "temp ==========>"
+            } else {
+                "params + temp =>"
+            }
+        } else if i == ctx.stack_params {
+            "params ========>"
         } else {
-            "         "
+            "                "
         };
-        debug!("{indent} {:?}", stack[i]);
+        debug!("[{:0>3}] {indent} {:?}", i, stack[i]);
     }
-    debug!("num_params: {}", state.num_params);
 }
 
 fn load_vocab_selector_names(resource: &Resource) -> HashMap<u16, &str> {
