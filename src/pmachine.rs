@@ -24,6 +24,7 @@ pub(crate) struct PMachine<'a> {
     resources: &'a HashMap<u16, Resource>,
     class_scripts: HashMap<u16, u16>,
     play_selector: u16,
+    doit_selector: u16,
     script_cache: FrozenMap<u16, Box<Script>>,
 
     // TODO: move to heap?
@@ -323,7 +324,7 @@ impl<'a> PMachine<'a> {
             .unwrap(),
         );
 
-        // TODO: only needed for play method and debugging
+        // TODO: only needed for play method, doit method and debugging
         let selector_names = load_vocab_selector_names(
             resource::get_resource(
                 &resources,
@@ -338,6 +339,11 @@ impl<'a> PMachine<'a> {
             .find(|(_, &name)| name == "play")
             .unwrap();
 
+        let (&doit_selector, _) = selector_names
+            .iter()
+            .find(|(_, &name)| name == "doit")
+            .unwrap();
+
         // TODO: only needed for debugging
         load_vocab_opcode_names(
             resource::get_resource(&resources, ResourceType::Vocab, VOCAB_RESOURCE_OPCODE_NAMES)
@@ -349,6 +355,7 @@ impl<'a> PMachine<'a> {
             resources: &resources,
             class_scripts,
             play_selector,
+            doit_selector,
             script_cache: FrozenMap::new(),
             object_cache: FrozenMap::new(),
             string_cache: FrozenMap::new(),
@@ -692,15 +699,21 @@ impl<'a> PMachine<'a> {
                         stack[stackframe_start].add(reg.rest_modifier as i16);
                         reg.rest_modifier = 0;
                     }
-                    let params = &stack[stackframe_start..];
 
-                    let num_params = params[0].to_i16();
-                    assert_eq!(num_params, k_params as i16);
+                    assert_eq!(stack[stackframe_start].to_i16(), k_params as i16);
 
                     // dump_stack(&stack, &state);
 
                     // call command, put return value into ax
-                    if let Some(value) = self.call_kernel_command(heap, graphics, k_func, params) {
+                    if let Some(value) = self.call_kernel_command(
+                        k_func,
+                        stackframe_start,
+                        reg,
+                        stack,
+                        heap,
+                        graphics,
+                        event_manager,
+                    ) {
                         reg.ax = value;
                     }
 
@@ -1199,11 +1212,16 @@ impl<'a> PMachine<'a> {
 
     fn call_kernel_command(
         &self,
-        heap: &mut Heap,
-        graphics: &mut Graphics, // TODO: avoid passing this around...
         kernel_function: u8,
-        params: &[Register],
+        stack_params: usize,
+        // TODO: avoid passing all these around
+        reg: &mut MachineRegisters,
+        stack: &mut Vec<Register>,
+        heap: &mut Heap,
+        graphics: &mut Graphics,
+        event_manager: &mut EventManager,
     ) -> Option<Register> {
+        let params = &stack[stack_params..];
         return match kernel_function {
             0x00 => {
                 // Load
@@ -1303,15 +1321,34 @@ impl<'a> PMachine<'a> {
                 info!("Kernel> Animate cast: {:?} cycle: {:?}", list_ptr, cycle);
 
                 let cast = heap
-                    .dbllist_cache
-                    .get(&list_ptr.to_dbllist())
-                    .unwrap()
+                    .get_dbllist(list_ptr.to_dbllist())
                     .iter()
-                    .map(|c| self.get_object(c.value));
+                    .map(|n| self.get_object(n.value))
+                    .collect_vec();
 
                 if cycle {
-                    // todo!("animate cycle");
-                    // TODO: call doit on each cast member
+                    let stack_params = stack.len();
+                    stack.push(Register::Value(0)); // set argc to 0
+                    debug!("Cast: {:?}", cast.iter().map(|c| &c.name).collect_vec());
+                    for c in cast {
+                        self.send_selector(
+                            c,
+                            c,
+                            self.doit_selector,
+                            stack_params,
+                            reg,
+                            stack,
+                            heap,
+                            graphics,
+                            event_manager,
+                        )
+                    }
+                    // unwind the stack
+                    debug!(
+                        "Unwinding stack after cycling case in Animate to {}",
+                        stack_params
+                    );
+                    stack.truncate(stack_params);
                 }
 
                 // todo!("animate");
@@ -1655,6 +1692,12 @@ impl<'a> PMachine<'a> {
             0x53 => {
                 // InitBresen
                 info!("Kernel> InitBresen");
+                // TODO implement
+                None
+            }
+            0x54 => {
+                // DoBresen
+                info!("Kernel> DoBresen");
                 // TODO implement
                 None
             }
