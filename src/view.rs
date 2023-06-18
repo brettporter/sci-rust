@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use log::debug;
 
 use crate::graphics::Colour;
 
@@ -77,22 +78,24 @@ pub(crate) fn draw_image(
     view: &View,
     group: usize,
     cel_idx: usize,
+    x: i16,
+    y: i16,
+    z: i16,
     canvas: &mut crate::graphics::GraphicsContext,
 ) {
     let cel = &view[group][cel_idx];
-    for y in 0..cel.size_y {
-        for x in 0..cel.size_x {
+    let left = x as i32 + cel.x_pos as i32 - cel.size_x as i32 / 2;
+    let top = (y as i32 + cel.y_pos as i32 - z as i32 + 1) - cel.size_y as i32 + 10;
+    for y in 0..cel.size_y as i32 {
+        for x in 0..cel.size_x as i32 {
             // TODO: just iterate
-            let idx = y * cel.size_x + x;
+            let idx = y * cel.size_x as i32 + x;
             let c = cel.bitmap[idx as usize];
             if c != cel.alpha_key {
                 // TODO: given repeats, probably no need to collect first - can just as easily draw here from the original bitmap
                 let colour = Colour::from_ega(c);
                 canvas.set_draw_color(colour.r, colour.g, colour.b); // TODO: palette needed?
-                canvas.draw_point(
-                    x as i32 + cel.x_pos as i32,
-                    y as i32 + 200 - cel.size_y as i32 - cel.y_pos as i32,
-                );
+                canvas.draw_point(left + x, top + y);
             }
         }
     }

@@ -1347,6 +1347,7 @@ impl<'a> PMachine<'a> {
 
                 // TODO: suggestion that it should be drawn to the "background" and use animate to bring it to the foreground
 
+                // todo!("Needs to be drawn to the background or it'll be cleared in animate");
                 let resource =
                     resource::get_resource(&self.resources, ResourceType::Pic, pic_number).unwrap();
                 graphics.draw_picture(resource);
@@ -1359,6 +1360,8 @@ impl<'a> PMachine<'a> {
                 let list_ptr = params.get(1).unwrap_or(&Register::Value(0)); // optional
                 let cycle = params.get(2).unwrap_or(&Register::Value(0)).to_i16() != 0; // optional
 
+                graphics.clear();
+
                 if list_ptr.is_zero_or_null() {
                     // TODO: what behaviour should there be if list is not given?
                     // Docs say: Animate will dispose lastCast (internal kernel knowledge of the cast during
@@ -1367,6 +1370,8 @@ impl<'a> PMachine<'a> {
                 }
 
                 // TODO: if background picture not drawn, animate with style from kDrawPic
+                // TODO: we need the background picture here anyway
+
                 info!("Kernel> Animate cast: {:?} cycle: {:?}", list_ptr, cycle);
 
                 let cast = heap
@@ -1375,11 +1380,12 @@ impl<'a> PMachine<'a> {
                     .map(|n| self.get_object(n.value))
                     .collect_vec();
 
+                // TODO: skip if signal frozen is set
                 if cycle {
                     let stack_params = stack.len();
                     stack.push(Register::Value(0)); // set argc to 0
                     debug!("Cast: {:?}", cast.iter().map(|c| &c.name).collect_vec());
-                    for c in cast {
+                    for c in &cast {
                         self.send_selector(
                             c,
                             c,
@@ -1400,7 +1406,46 @@ impl<'a> PMachine<'a> {
                     stack.truncate(stack_params);
                 }
 
-                // todo!("animate");
+                // todo!("additional animate logic"); -- there's a lot else to do here to sort, filter, etc.
+                // for now, just rendering each cel as is. Currently ignoring palette, priority, signal, etc.
+
+                // TODO: factor out this code, no way it belongs in pmachine!
+                for c in &cast {
+                    // TODO: better methods to do this and construct a struct
+                    // TODO: define the selectors somewhere
+                    let x = c.get_property(4).to_i16();
+                    let y = c.get_property(3).to_i16();
+                    let z = c.get_property(0x55).to_i16();
+                    let view_num = c.get_property(5).to_u16();
+                    let loop_num = c.get_property(6).to_i16();
+                    let cel = c.get_property(7).to_i16();
+                    let signal = c.get_property(0x11).to_i16();
+
+                    debug!(
+                        "Draw cel ({},{},{}) view: {:?} loop: {} cel: {} signal: {}",
+                        x, y, z, view_num, loop_num, cel, signal
+                    );
+
+                    // TODO: why is magnifying glass -1 and doesn't move? (must need Bresen)
+
+                    // TODO: do we ignore or correct negative cel?
+                    if cel >= 0 {
+                        // Hide signal
+                        if signal & 0x8 == 0 {
+                            // TODO: improve caching
+                            let resource = resource::get_resource(
+                                self.resources,
+                                ResourceType::View,
+                                view_num,
+                            )
+                            .unwrap();
+                            let view = view::load_view(&resource);
+                            graphics.draw_view(&view, loop_num as usize, cel as usize, x, y, z);
+                        }
+                    }
+                }
+
+                graphics.present();
 
                 // No return value
                 None

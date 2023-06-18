@@ -124,10 +124,11 @@ impl Graphics {
             .expect("Unable to copy texture to the canvas");
     }
 
-    pub fn draw_view(&mut self, view: &View, group: usize, cel: usize) {
+    pub fn draw_view(&mut self, view: &View, group: usize, cel: usize, x: i16, y: i16, z: i16) {
         // TODO: we don't want a method just to do this - how does view get included into a full scene render?
         let canvas = &mut self.canvas;
-        view::draw_image(view, group, cel, &mut GraphicsContext { canvas });
+        // TODO: we should keep this on a texture and just put it into the rect
+        view::draw_image(view, group, cel, x, y, z, &mut GraphicsContext { canvas });
     }
 
     pub fn clear(&mut self) {

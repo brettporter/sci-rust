@@ -52,7 +52,7 @@ pub fn run(game: &Game) -> Result<(), String> {
     let resource = resource::get_resource(resources, ResourceType::View, resource_number).unwrap();
     let mut view = view::load_view(&resource);
     graphics.clear();
-    graphics.draw_view(&view, group, cel);
+    graphics.draw_view(&view, group, cel, 160, 190, 0);
     graphics.present();
 
     let mut event_pump = sdl_context.event_pump()?;
@@ -121,7 +121,7 @@ pub fn run(game: &Game) -> Result<(), String> {
                 _ => {}
             }
         }
-        graphics.draw_view(&view, group, cel);
+        graphics.draw_view(&view, group, cel, 160, 190, 0);
         graphics.present();
         ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
     }
