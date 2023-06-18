@@ -1096,15 +1096,15 @@ impl<'a> PMachine<'a> {
                     // sagi W | B
                     let var = ctx.read_u16_or_u8(cmd);
                     let idx = var + reg.ax.to_u16();
-                    debug!("store accumulator {} to global {}", reg.ax.to_u16(), idx);
+                    debug!("store accumulator {:?} to global {}", reg.ax, idx);
                     heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[idx as usize] =
                         reg.ax;
                 }
                 0xb2 | 0xb3 => {
-                    // sali B
+                    // sali W | B
                     let var = ctx.read_u16_or_u8(cmd);
                     let idx = var + reg.ax.to_u16();
-                    debug!("store accumulator {} to local {}", reg.ax.to_u16(), idx);
+                    debug!("store accumulator {:?} to local {}", reg.ax, idx);
                     heap.script_local_variables.get_mut(&ctx.script).unwrap()[idx as usize] =
                         reg.ax;
                 }
