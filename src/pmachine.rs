@@ -123,6 +123,14 @@ impl ExecutionContext {
     fn num_params(&self) -> u16 {
         (self.stack_temps - self.stack_params) as u16
     }
+
+    fn read_u16_or_u8(&mut self, cmd: u8) -> u16 {
+        if cmd & 1 == 0 {
+            self.read_u16()
+        } else {
+            self.read_u8() as u16
+        }
+    }
 }
 
 // TODO: should probably be bitflags instead in the script reader, and then just defining the type of object/clone/class in here as needed
@@ -554,6 +562,11 @@ impl<'a> PMachine<'a> {
                 0x08 | 0x09 => {
                     // div
                     reg.ax = Register::Value(stack.pop().unwrap().to_i16() / reg.ax.to_i16());
+                }
+                0xa | 0xb => {
+                    if !reg.ax.is_zero_or_null() {
+                        reg.ax = Register::Value(stack.pop().unwrap().to_i16() % reg.ax.to_i16());
+                    }
                 }
                 0x0c | 0x0d => {
                     // shr
@@ -1034,9 +1047,9 @@ impl<'a> PMachine<'a> {
                         reg.ax = stack[ctx.stack_params + var as usize];
                     }
                 }
-                0x98 => {
-                    // lsgi W
-                    let var = ctx.read_u16() + reg.ax.to_u16();
+                0x98 | 0x99 => {
+                    // lsgi W | B
+                    let var = ctx.read_u16_or_u8(cmd) + reg.ax.to_u16();
                     debug!("load global {} to stack", var);
                     stack.push(heap.script_local_variables[&SCRIPT_MAIN][var as usize]);
                 }
@@ -1079,17 +1092,26 @@ impl<'a> PMachine<'a> {
                     debug!("store accumulator to param {}", var);
                     stack[ctx.stack_params + var] = reg.ax;
                 }
-                0xb0 => {
-                    // sagi W
-                    let var = ctx.read_u16();
+                0xb0 | 0xb1 => {
+                    // sagi W | B
+                    let var = ctx.read_u16_or_u8(cmd);
                     let idx = var + reg.ax.to_u16();
                     debug!("store accumulator {} to global {}", reg.ax.to_u16(), idx);
                     heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[idx as usize] =
                         reg.ax;
                 }
+                0xb2 | 0xb3 => {
+                    // sali B
+                    let var = ctx.read_u16_or_u8(cmd);
+                    let idx = var + reg.ax.to_u16();
+                    debug!("store accumulator {} to local {}", reg.ax.to_u16(), idx);
+                    heap.script_local_variables.get_mut(&ctx.script).unwrap()[idx as usize] =
+                        reg.ax;
+                }
                 0xc1 => {
                     // +ag B
                     let var = ctx.read_u8() as usize;
+                    debug!("increment global {} and store in accumulator", var);
                     heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].add(1);
                     reg.ax = heap.script_local_variables[&SCRIPT_MAIN][var];
                 }
@@ -1097,14 +1119,39 @@ impl<'a> PMachine<'a> {
                     // +at B
                     let var = ctx.read_u8() as usize;
                     let idx = ctx.stack_temps + var;
+                    debug!("increment temp {} and store in accumulator", var);
                     let v = stack[idx].to_i16() + 1;
                     stack[idx] = Register::Value(v);
                     reg.ax = stack[idx];
                 }
+                0xc9 => {
+                    // +sg B
+                    let var = ctx.read_u8() as usize;
+                    debug!("increment global {} and store on stack", var);
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].add(1);
+                    stack.push(heap.script_local_variables[&SCRIPT_MAIN][var]);
+                }
+                0xe1 => {
+                    // -ag B
+                    let var = ctx.read_u8() as usize;
+                    debug!("decrement global {} and store in accumulator", var);
+                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var].sub(1);
+                    reg.ax = heap.script_local_variables[&SCRIPT_MAIN][var];
+                }
                 0xe5 => {
                     // -at B
                     let var = ctx.read_u8() as usize;
+                    debug!("decrement temp {} and store in accumulator", var);
                     let idx = ctx.stack_temps + var;
+                    let v = stack[idx].to_i16() - 1;
+                    stack[idx] = Register::Value(v);
+                    reg.ax = stack[idx];
+                }
+                0xe7 => {
+                    // -ap B
+                    let var = ctx.read_u8() as usize;
+                    debug!("decrement param {} and store in accumulator", var);
+                    let idx = ctx.stack_params + var;
                     let v = stack[idx].to_i16() - 1;
                     stack[idx] = Register::Value(v);
                     reg.ax = stack[idx];
@@ -1285,12 +1332,13 @@ impl<'a> PMachine<'a> {
                 // DrawPic
                 let pic_number = params[1].to_u16();
                 let animation = params[2].to_i16(); // TODO: make optional
-                let flags = params[3].to_i16(); // TODO: make optional
-                let default_palette = params[4].to_i16(); // TODO: make optional
+                                                    // let flags = params[3].to_i16(); // TODO: make optional
+                                                    // let default_palette = params[4].to_i16(); // TODO: make optional
 
                 info!(
-                    "Kernel> DrawPic pic: {} animation: {} flags: {} default_palette: {}",
-                    pic_number, animation, flags, default_palette
+                    "Kernel> DrawPic pic: {} animation: {}", // flags: {} default_palette: {}",
+                    pic_number,
+                    animation //, flags, default_palette
                 );
 
                 // TODO: handle different animations. Currently just show instantly
