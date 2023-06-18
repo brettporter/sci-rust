@@ -1784,7 +1784,29 @@ impl<'a> PMachine<'a> {
             }
             0x53 => {
                 // InitBresen
-                info!("Kernel> InitBresen");
+                let obj = params[1].to_obj();
+                let step_factor = if params.len() > 2 {
+                    params[2].to_i16()
+                } else {
+                    1
+                }; // optional
+                info!("Kernel> InitBresen {:?} by {}", obj, step_factor);
+
+                let mover = self.get_object(obj);
+                // TODO: support names as a way of lookup
+                // client = 0x2d
+                // x = 4, y = 3
+                let client = self.get_object(mover.get_property(0x2d).to_obj());
+                let mover_x = mover.get_property(4).to_i16();
+                let mover_y = mover.get_property(3).to_i16();
+                let client_x = client.get_property(4).to_i16();
+                let client_y = client.get_property(3).to_i16();
+
+                debug!(
+                    "{:?} {} {} {} {}",
+                    client, mover_x, mover_y, client_x, client_y
+                );
+
                 // TODO implement
                 None
             }
