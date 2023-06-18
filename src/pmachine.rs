@@ -1341,9 +1341,6 @@ impl<'a> PMachine<'a> {
                 // TODO: suggestion that it should be drawn to the "background" and use animate to bring it to the foreground
 
                 // todo!("Needs to be drawn to the background or it'll be cleared in animate");
-                let resource =
-                    resource::get_resource(&self.resources, ResourceType::Pic, pic_number).unwrap();
-                graphics.draw_picture(resource);
 
                 // TODO: implement this
                 None
@@ -1420,8 +1417,8 @@ impl<'a> PMachine<'a> {
                     );
 
                     // TODO: why is magnifying glass -1 and doesn't move? (must need Bresen)
-
                     // TODO: do we ignore or correct negative cel?
+                    // let cel = if cel < 0 { 0 } else { cel };
                     if cel >= 0 {
                         // Hide signal
                         if signal & 0x8 == 0 {
