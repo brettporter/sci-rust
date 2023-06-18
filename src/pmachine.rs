@@ -1059,17 +1059,10 @@ impl<'a> PMachine<'a> {
                     debug!("load parameter {} to stack", var);
                     stack.push(stack[ctx.stack_params + var as usize]);
                 }
-                0xa0 => {
-                    // sag W
-                    let var = ctx.read_u16();
-                    debug!("store accumulator to global {}", var);
-                    heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] =
-                        reg.ax;
-                }
-                0xa1 => {
-                    // sag B
-                    let var = ctx.read_u8();
-                    debug!("store accumulator to global {}", var);
+                0xa0 | 0xa1 => {
+                    // sag W | B
+                    let var = ctx.read_u16_or_u8(cmd);
+                    debug!("store accumulator to global {} = {:?}", var, reg.ax);
                     heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] =
                         reg.ax;
                 }
