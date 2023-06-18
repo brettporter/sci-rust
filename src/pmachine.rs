@@ -1791,19 +1791,126 @@ impl<'a> PMachine<'a> {
                 let mover_y = mover.get_property(3).to_i16();
                 let client_x = client.get_property(4).to_i16();
                 let client_y = client.get_property(3).to_i16();
+                let x_step = client.get_property(0x36).to_i16();
+                let y_step = client.get_property(0x37).to_i16();
 
-                debug!(
-                    "{:?} {} {} {} {}",
-                    client, mover_x, mover_y, client_x, client_y
-                );
+                let (dx, dy) = (mover_x - client_x, mover_y - client_y);
+                let x_axis = dx.abs() > dy.abs();
+                let (mut step_dx, mut step_dy) = match x_axis {
+                    true => (x_step * step_factor, x_step * step_factor * dy / dx),
+                    false => (y_step * step_factor * dx / dy, y_step * step_factor),
+                };
+                if dx < 0 {
+                    step_dx = -step_dx;
+                }
+                if dy < 0 {
+                    step_dy = -step_dy;
+                }
 
-                // TODO implement
+                // TODO: document this
+                // Octants go counter clockwise starting with a line up and to the right with major x-axis
+                let octant = match (x_axis, dx >= 0, dy >= 0) {
+                    (true, true, false) => 1,
+                    (false, true, false) => 2,
+                    (false, false, false) => 3,
+                    (true, false, false) => 4,
+                    (true, false, true) => 5,
+                    (false, false, true) => 6,
+                    (false, true, true) => 7,
+                    (true, true, true) => 8,
+                };
+
+                // i1 is added when di >= 0 (rounded up to next pixel)
+                let i1 = match octant {
+                    1 | 3 | 5 | 7 => 2 * (step_dy * dx - step_dx * dy),
+                    2 | 4 | 6 | 8 => 2 * (step_dx * dy - step_dy * dx),
+                    _ => panic!("Invalid octant"),
+                };
+                // i2 is added when di < 0 (rounded down to current pixel)
+                // di is set to the initial value
+                let (i2, di) = match octant {
+                    1 | 8 => (-2 * dx, i1 - dx),
+                    2 | 3 => (2 * dy, i1 + dy),
+                    4 | 5 => (2 * dx, i1 + dx),
+                    6 | 7 => (-2 * dy, i1 - dy),
+                    _ => panic!("Invalid octant"),
+                };
+                // Direction of the minor axis
+                let minor_axis_incr = match octant {
+                    2 | 5 | 7 | 8 => 1,
+                    1 | 3 | 4 | 6 => -1,
+                    _ => panic!("Invalid octant"),
+                };
+
+                // TODO constrain dx if we would exceed dy
+
+                // TODO: debug logging
+                mover.set_property(0x2e, Register::Value(step_dx)); // dx
+                mover.set_property(0x2f, Register::Value(step_dy)); // dy
+                mover.set_property(0x31, Register::Value(i1)); // b-i1
+                mover.set_property(0x32, Register::Value(i2)); // b-i2
+                mover.set_property(0x33, Register::Value(di)); // b-di
+                mover.set_property(0x34, Register::Value(if x_axis { 1 } else { 0 })); // b-x-axis
+                mover.set_property(0x35, Register::Value(minor_axis_incr)); // b-incr
+
                 None
             }
             0x54 => {
                 // DoBresen
-                info!("Kernel> DoBresen");
-                // TODO implement
+                let obj = params[1].to_obj();
+
+                info!("Kernel> DoBresen {:?} ", obj);
+
+                // TODO: remove hardcoding
+                let mover = self.get_object(obj);
+                let mover_x = mover.get_property(4).to_i16();
+                let mover_y = mover.get_property(3).to_i16();
+
+                let client = self.get_object(mover.get_property(0x2d).to_obj());
+                let mut client_x = client.get_property(4).to_i16();
+                let mut client_y = client.get_property(3).to_i16();
+
+                let dx = mover.get_property(0x2e).to_i16();
+                let dy = mover.get_property(0x2f).to_i16();
+                let i1 = mover.get_property(0x31).to_i16();
+                let i2 = mover.get_property(0x32).to_i16();
+                let mut di = mover.get_property(0x33).to_i16();
+                let x_axis = mover.get_property(0x34).to_i16() != 0;
+                let minor_axis_incr = mover.get_property(0x35).to_i16();
+
+                // TODO: handle move count / move speed variables
+
+                // TODO: debug logging
+                if (x_axis && (mover_x - client_x).abs() <= dx.abs())
+                    || (!x_axis && (mover_y - client_y).abs() <= dy.abs())
+                {
+                    // Reached destination
+                    client_x = mover_x;
+                    client_y = mover_y;
+                } else {
+                    // Move forward one step
+                    client_x += dx;
+                    client_y += dy;
+                    if di < 0 {
+                        di += i1;
+                    } else {
+                        di += i2;
+                        if x_axis {
+                            client_y += minor_axis_incr;
+                        } else {
+                            client_x += minor_axis_incr;
+                        }
+                    }
+                }
+                client.set_property(4, Register::Value(client_x));
+                client.set_property(3, Register::Value(client_y));
+
+                // TODO check "can't be here"
+
+                mover.set_property(0x31, Register::Value(i1));
+                mover.set_property(0x32, Register::Value(i2));
+                mover.set_property(0x33, Register::Value(di));
+
                 None
             }
             0x60 => {
