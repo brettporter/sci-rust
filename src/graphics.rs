@@ -72,6 +72,7 @@ impl Graphics {
 
         let mut canvas = window
             .into_canvas()
+            .present_vsync()
             .build()
             .expect("could not make a canvas");
 
