@@ -74,6 +74,7 @@ struct MachineRegisters {
     ax: Register,
     // TODO: does this belong in execution context?
     rest_modifier: usize,
+    last_wait_time: Instant,
 }
 
 struct ExecutionContext {
@@ -451,6 +452,7 @@ impl<'a> PMachine<'a> {
         let mut reg = MachineRegisters {
             ax: Register::Undefined,
             rest_modifier: 0,
+            last_wait_time: Instant::now(),
         };
 
         // Pre-load objects for all classes to avoid lazy init problems
@@ -1698,8 +1700,12 @@ impl<'a> PMachine<'a> {
                 info!("Kernel> Wait ticks: {:x}", ticks);
                 const TICK_DURATION: u32 = 1_000_000_000u32 / 60;
                 ::std::thread::sleep(Duration::new(0, ticks as u32 * TICK_DURATION));
-                // TODO: set return value
-                Some(Register::Value(0))
+                let t = Instant::now();
+                let result =
+                    t.duration_since(reg.last_wait_time).as_nanos() / TICK_DURATION as u128;
+                debug!("Time between wait {}", result);
+                reg.last_wait_time = t;
+                Some(Register::Value(result as i16))
             }
             0x46 => {
                 // GetTime
