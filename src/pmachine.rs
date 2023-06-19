@@ -1448,8 +1448,19 @@ impl<'a> PMachine<'a> {
                 // NumCels
                 let obj = params[1].to_obj();
                 info!("Kernel> NumCels for object {:?}", obj);
-                // todo!("number of cels - needs to load view")
-                Some(Register::Value(0))
+                let v = self.get_object(obj);
+                let view_num = v.get_property(5).to_u16();
+                let loop_num = v.get_property(6).to_i16();
+                // TODO: improve caching of view
+                let resource =
+                    resource::get_resource(self.resources, ResourceType::View, view_num).unwrap();
+                let view = view::load_view(&resource);
+                let num_cels = view[loop_num as usize].len() as i16;
+                debug!(
+                    "Number of cels for view: {} loop: {} = {}",
+                    view_num, loop_num, num_cels
+                );
+                Some(Register::Value(num_cels))
             }
             0x1b => {
                 // Display (text)
