@@ -1433,7 +1433,8 @@ impl<'a> PMachine<'a> {
                             )
                             .unwrap();
                             let view = view::load_view(&resource);
-                            graphics.draw_view(&view, loop_num as usize, cel as usize, x, y, z);
+                            // TODO: when should z be set and used to adjust rect?
+                            graphics.draw_view(&view, loop_num as usize, cel as usize, x, y, 0);
                         }
                     }
                 }
