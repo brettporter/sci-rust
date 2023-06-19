@@ -136,6 +136,23 @@ impl DitheredColour {
     }
 }
 
+pub(crate) struct BackgroundState {
+    pub pic_number: u16,
+    pub animation: i16,
+    pub clear: bool,
+    pub pic_not_valid: i16,
+}
+impl BackgroundState {
+    pub(crate) fn new() -> BackgroundState {
+        Self {
+            pic_number: 0xFFFF, // TODO: better value
+            animation: -1,
+            clear: true,
+            pic_not_valid: 0,
+        }
+    }
+}
+
 struct Deserializer<'a> {
     index: usize,
     data: &'a [u8],

@@ -9,7 +9,7 @@ use sdl2::{
 };
 
 use crate::{
-    picture,
+    picture::{self, BackgroundState},
     resource::Resource,
     view::{self, View},
 };
@@ -52,6 +52,7 @@ impl Colour {
 
 pub struct Graphics {
     canvas: Canvas<Window>,
+    pub(crate) background_state: BackgroundState, // TODO: circular dep - should this be in here?
 }
 impl Graphics {
     // TODO: replace these with values from the window
@@ -82,7 +83,10 @@ impl Graphics {
             .set_logical_size(320, 200)
             .expect("Unable to set the logical size of the window canvas");
 
-        Self { canvas }
+        Self {
+            canvas,
+            background_state: BackgroundState::new(),
+        }
     }
 
     // TODO: Consider moving this into graphics. However, maybe refactor to get the surface from graphics to draw onto, not draw image in the middle (though if we are drawing straight to our own buffer, maybe?)

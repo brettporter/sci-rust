@@ -16,6 +16,7 @@ use num_traits::FromPrimitive;
 use crate::{
     events::EventManager,
     graphics::Graphics,
+    picture::BackgroundState,
     resource::{self, Resource, ResourceType},
     script::{Id, Script, StringDefinition},
     view,
@@ -1066,7 +1067,12 @@ impl<'a> PMachine<'a> {
                     let var = ctx.read_u16_or_u8(cmd);
                     debug!("store accumulator to global {} = {:?}", var, reg.ax);
                     heap.script_local_variables.get_mut(&SCRIPT_MAIN).unwrap()[var as usize] =
-                        reg.ax;
+                        if var == 223 && reg.ax.is_zero_or_null() {
+                            // TODO: workaround, vsync and current rendering sets howFast to slow
+                            Register::Value(2)
+                        } else {
+                            reg.ax
+                        };
                 }
                 0xa3 => {
                     // sal B
@@ -1265,6 +1271,7 @@ impl<'a> PMachine<'a> {
         event_manager: &mut EventManager,
     ) -> Option<Register> {
         let params = &stack[stack_params..];
+        let num_params = params[0].to_i16();
         return match kernel_function {
             0x00 => {
                 // Load
@@ -1326,15 +1333,33 @@ impl<'a> PMachine<'a> {
             0x08 => {
                 // DrawPic
                 let pic_number = params[1].to_u16();
-                let animation = params[2].to_i16(); // TODO: make optional
-                                                    // let flags = params[3].to_i16(); // TODO: make optional
-                                                    // let default_palette = params[4].to_i16(); // TODO: make optional
+                // TODO: common functions for getting optional parameters using params[0] as srgc
+                // TODO: instead of -1, default should be the one last used
+                let animation = if num_params >= 2 {
+                    params[2].to_i16()
+                } else {
+                    -1
+                }; // optional
+                let flags = if num_params >= 3 {
+                    params[3].to_i16()
+                } else {
+                    1
+                };
+                // let default_palette = params[4].to_i16(); // TODO: make optional
 
                 info!(
-                    "Kernel> DrawPic pic: {} animation: {}", // flags: {} default_palette: {}",
+                    "Kernel> DrawPic pic: {} animation: {} flags: {}", // TODO: default_palette: {}",
                     pic_number,
-                    animation //, flags, default_palette
+                    animation,
+                    flags //, default_palette
                 );
+
+                graphics.background_state = BackgroundState {
+                    pic_number,
+                    animation,
+                    clear: flags != 0,
+                    pic_not_valid: 1,
+                };
 
                 // TODO: handle different animations. Currently just show instantly
                 // TODO: handle flags - determines whether to clear or not
@@ -1363,9 +1388,6 @@ impl<'a> PMachine<'a> {
                     // the previous animation cycle) and redraw the picture, if needed.
                     return None;
                 }
-
-                // TODO: if background picture not drawn, animate with style from kDrawPic
-                // TODO: we need the background picture here anyway
 
                 info!("Kernel> Animate cast: {:?} cycle: {:?}", list_ptr, cycle);
 
@@ -1400,6 +1422,15 @@ impl<'a> PMachine<'a> {
                     );
                     stack.truncate(stack_params);
                 }
+
+                // TODO: don't redraw every time - save to the background and animate in if pic not valid
+                let resource = resource::get_resource(
+                    &self.resources,
+                    ResourceType::Pic,
+                    graphics.background_state.pic_number,
+                )
+                .unwrap();
+                graphics.draw_picture(resource);
 
                 // todo!("additional animate logic"); -- there's a lot else to do here to sort, filter, etc.
                 // for now, just rendering each cel as is. Currently ignoring palette, priority, signal, etc.
