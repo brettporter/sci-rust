@@ -10,7 +10,7 @@ extern crate num_derive;
 
 mod events;
 pub mod graphics;
-mod picture;
+pub mod picture;
 mod pmachine;
 pub mod resource;
 mod script;

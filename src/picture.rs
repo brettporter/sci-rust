@@ -5,9 +5,13 @@ use bitstream_io::{BigEndian, BitRead, BitReader};
 use num_traits::FromPrimitive;
 
 use crate::{
-    graphics::{Colour, Graphics, GraphicsContext},
+    graphics::{self, Colour, Graphics, GraphicsContext},
     resource::Resource,
 };
+
+trait Drawer {
+    fn draw_point(&mut self, x: i32, y: i32);
+}
 
 #[derive(FromPrimitive)]
 #[repr(u8)]
@@ -257,11 +261,110 @@ impl<'a> Deserializer<'a> {
     }
 }
 
-pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
+struct DrawState {
+    visual: bool,
+
+    priority: Option<u8>,
+    control: Option<u8>,
+}
+impl DrawState {
+    fn new() -> Self {
+        Self {
+            visual: true,
+            priority: Some(0),
+            control: None,
+        }
+    }
+}
+
+pub struct PictureMaps {
+    pub priority: Box<[u8]>,
+    pub control: Box<[u8]>,
+}
+
+struct FilteredDrawer<'a> {
+    map: PictureMaps,
+    graphics: &'a mut GraphicsContext<'a>,
+    draw_state: DrawState,
+}
+impl<'a> FilteredDrawer<'a> {
+    fn new(map: PictureMaps, graphics: &'a mut GraphicsContext<'a>) -> FilteredDrawer<'a> {
+        Self {
+            map,
+            graphics,
+            draw_state: DrawState::new(),
+        }
+    }
+
+    fn flood_fill(&mut self, x: i32, y: i32) {
+        if self.draw_state.visual {
+            self.graphics.flood_fill(x, y);
+        }
+
+        if let Some(priority) = self.draw_state.priority {
+            graphics::flood_fill(
+                &mut self.map.priority,
+                x,
+                y,
+                |bytes, p| {
+                    bytes[(p.y * Graphics::VIEWPORT_WIDTH + p.x) as usize] = priority;
+                },
+                |bytes, p| bytes[(p.y * Graphics::VIEWPORT_WIDTH + p.x) as usize] != 0,
+            );
+        }
+        if let Some(control) = self.draw_state.control {
+            graphics::flood_fill(
+                &mut self.map.control,
+                x,
+                y,
+                |bytes, p| {
+                    bytes[(p.y * Graphics::VIEWPORT_WIDTH + p.x) as usize] = control;
+                },
+                |bytes, p| bytes[(p.y * Graphics::VIEWPORT_WIDTH + p.x) as usize] != 0,
+            );
+        }
+    }
+
+    fn set_draw_color(&mut self, r: u8, g: u8, b: u8) {
+        self.graphics.set_draw_color(r, g, b);
+    }
+}
+
+impl<'a> Drawer for FilteredDrawer<'a> {
+    fn draw_point(&mut self, x: i32, y: i32) {
+        if self.draw_state.visual {
+            self.graphics.draw_point(x, y);
+        }
+
+        if let Some(p) = self.draw_state.priority {
+            self.map.priority[get_map_index(x, y)] = p;
+        }
+
+        if let Some(c) = self.draw_state.control {
+            self.map.control[get_map_index(x, y)] = c;
+        }
+    }
+}
+
+fn get_map_index(x: i32, y: i32) -> usize {
+    (y * Graphics::VIEWPORT_WIDTH + x) as usize
+}
+
+pub(crate) fn draw_image<'a>(
+    graphics: &'a mut GraphicsContext<'a>,
+    resource: &Resource,
+) -> PictureMaps {
     let mut data = Deserializer::new(resource);
 
-    // TODO: refactor state as we introduce control / priority drawing as well
-    let mut visual = true;
+    // TODO: fixed sizes
+    const VIEWPORT_SIZE: usize =
+        Graphics::VIEWPORT_WIDTH as usize * Graphics::VIEWPORT_HEIGHT as usize;
+    let map = PictureMaps {
+        priority: Box::new([0; VIEWPORT_SIZE]),
+        control: Box::new([0; VIEWPORT_SIZE]),
+    };
+
+    let mut drawer = FilteredDrawer::new(map, graphics);
 
     let mut palette = [
         DitheredColour::default_palette(),
@@ -286,35 +389,31 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                 // TODO: support dithering?
                 let c = dither.blend();
                 // TODO: currently just passing through to SDL but may be something we keep state on in here
-                graphics.set_draw_color(c.r, c.g, c.b);
-                visual = true;
+                drawer.set_draw_color(c.r, c.g, c.b);
+                drawer.draw_state.visual = true;
             }
             PictureCommand::DisableVisual => {
-                visual = false;
+                drawer.draw_state.visual = false;
             }
             PictureCommand::SetPriorityColour => {
-                // TODO: set priority colour
-                data.skip(1);
+                drawer.draw_state.priority = Some(data.read_byte());
             }
             PictureCommand::DisablePriority => {
-                // TODO: disable priority
+                drawer.draw_state.priority = None;
             }
             PictureCommand::DrawShortRelativePatterns => {
                 let texture = pattern_brush.use_texture.then(|| data.read_texture());
 
                 let mut p = data.read_coordinates();
-                if visual {
-                    draw_pattern(graphics, &p, &pattern_brush, texture);
-                }
+                draw_pattern(&mut drawer, &p, &pattern_brush, texture);
 
                 while !data.next_is_command() {
                     let texture = pattern_brush.use_texture.then(|| data.read_texture());
                     let (offset_x, offset_y) = data.read_short_relative_offset();
                     p = p.offset(offset_x, offset_y);
 
-                    if visual {
-                        draw_pattern(graphics, &p, &pattern_brush, texture);
-                    }
+                    assert!(drawer.draw_state.control.is_none());
+                    draw_pattern(&mut drawer, &p, &pattern_brush, texture);
                 }
             }
             PictureCommand::DrawRelativeLines => {
@@ -324,9 +423,7 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                     let (offset_x, offset_y) = data.read_relative_offset();
                     let end = start.offset(offset_x, offset_y);
 
-                    if visual {
-                        draw_line(graphics, &start, &end);
-                    }
+                    draw_line(&mut drawer, &start, &end);
 
                     start = end;
                 }
@@ -337,9 +434,7 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                 while !data.next_is_command() {
                     let end = data.read_coordinates();
 
-                    if visual {
-                        draw_line(graphics, &start, &end);
-                    }
+                    draw_line(&mut drawer, &start, &end);
 
                     start = end;
                 }
@@ -351,9 +446,7 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                     let (offset_x, offset_y) = data.read_short_relative_offset();
                     let end = start.offset(offset_x, offset_y);
 
-                    if visual {
-                        draw_line(graphics, &start, &end);
-                    }
+                    draw_line(&mut drawer, &start, &end);
 
                     start = end;
                 }
@@ -362,9 +455,7 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                 while !data.next_is_command() {
                     let p = data.read_coordinates();
 
-                    if visual {
-                        graphics.flood_fill(p.x, p.y);
-                    }
+                    drawer.flood_fill(p.x, p.y);
                 }
             }
             PictureCommand::SetPattern => {
@@ -374,32 +465,27 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                 while !data.next_is_command() {
                     let texture = pattern_brush.use_texture.then(|| data.read_texture());
                     let p = data.read_coordinates();
-                    if visual {
-                        draw_pattern(graphics, &p, &pattern_brush, texture);
-                    }
+                    draw_pattern(&mut drawer, &p, &pattern_brush, texture);
                 }
             }
             PictureCommand::SetControlColour => {
-                // TODO - Set control colour
-                data.skip(1);
+                drawer.draw_state.control = Some(data.read_byte());
             }
             PictureCommand::DisableControl => {
-                // TODO - Disable control
+                drawer.draw_state.control = None;
             }
             PictureCommand::DrawRelativePatterns => {
                 let texture = pattern_brush.use_texture.then(|| data.read_texture());
 
                 let mut p = data.read_coordinates();
-                if visual {
-                    draw_pattern(graphics, &p, &pattern_brush, texture);
-                }
+                draw_pattern(&mut drawer, &p, &pattern_brush, texture);
 
                 while !data.next_is_command() {
                     let texture = pattern_brush.use_texture.then(|| data.read_texture());
                     let (offset_x, offset_y) = data.read_relative_offset();
                     p = p.offset(offset_x, offset_y);
 
-                    draw_pattern(graphics, &p, &pattern_brush, texture);
+                    draw_pattern(&mut drawer, &p, &pattern_brush, texture);
                 }
             }
             PictureCommand::ExtendedCommand => {
@@ -436,13 +522,13 @@ pub(crate) fn draw_image(graphics: &mut GraphicsContext, resource: &Resource) {
                     }
                 }
             }
-            PictureCommand::Finish => return,
+            PictureCommand::Finish => return drawer.map,
         }
     }
 }
 
 fn draw_pattern(
-    graphics: &mut GraphicsContext,
+    drawer: &mut dyn Drawer,
     p: &Point,
     pattern_brush: &PatternBrush,
     texture: Option<u8>,
@@ -454,13 +540,13 @@ fn draw_pattern(
     let y = p.y.max(size).min(Graphics::VIEWPORT_HEIGHT - size - 1);
 
     match pattern_brush.shape {
-        BrushShape::RECTANGLE => draw_pattern_rect(graphics, x, y, pattern_brush, texture),
-        BrushShape::CIRCLE => draw_pattern_circle(graphics, x, y, pattern_brush, texture),
+        BrushShape::RECTANGLE => draw_pattern_rect(drawer, x, y, pattern_brush, texture),
+        BrushShape::CIRCLE => draw_pattern_circle(drawer, x, y, pattern_brush, texture),
     }
 }
 
 fn draw_pattern_circle(
-    graphics: &mut GraphicsContext,
+    drawer: &mut dyn Drawer,
     x: i32,
     y: i32,
     pattern_brush: &PatternBrush,
@@ -491,14 +577,14 @@ fn draw_pattern_circle(
                 reader.seek_bits(SeekFrom::Start(0)).unwrap();
             }
             if !pattern_brush.use_texture || reader.read_bit().unwrap() {
-                graphics.draw_point(x + x_offset, y + y_idx - size)
+                drawer.draw_point(x + x_offset, y + y_idx - size)
             }
         }
     }
 }
 
 fn draw_pattern_rect(
-    graphics: &mut GraphicsContext,
+    drawer: &mut dyn Drawer,
     x: i32,
     y: i32,
     pattern_brush: &PatternBrush,
@@ -513,7 +599,7 @@ fn draw_pattern_rect(
                 reader.seek_bits(SeekFrom::Start(0)).unwrap();
             }
             if !pattern_brush.use_texture || reader.read_bit().unwrap() {
-                graphics.draw_point(x + dx, y + dy);
+                drawer.draw_point(x + dx, y + dy);
             }
         }
     }
@@ -582,8 +668,8 @@ where
 }
 
 // TODO: move to graphics?
-fn draw_line(graphics: &mut GraphicsContext, start: &Point, end: &Point) {
+fn draw_line(drawer: &mut dyn Drawer, start: &Point, end: &Point) {
     // TODO: can we just use SDL instead?
     // canvas.draw_line(sdl2::rect::Point::new(start.x, start.y), sdl2::rect::Point::new(end.x, end.y))
-    bresenham(start, end, &mut |x, y| graphics.draw_point(x, y))
+    bresenham(start, end, &mut |x, y| drawer.draw_point(x, y))
 }

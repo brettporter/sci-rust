@@ -9,7 +9,7 @@ use sdl2::{
 };
 
 use crate::{
-    picture::{self, BackgroundState},
+    picture::{self, BackgroundState, PictureMaps},
     resource::Resource,
     view::{self, View},
 };
@@ -93,7 +93,7 @@ impl Graphics {
     // What is the right thing to pass into draw_image since I only get the texture canvas in the loop
     // But it's not super useful since it's all point drawing
     //  -- refactor all the canvas bits in picture to something I can narrow down to a simple implementation
-    pub fn draw_picture(&mut self, resource: &Resource) {
+    pub fn draw_picture(&mut self, resource: &Resource) -> PictureMaps {
         // TODO: better to just do the above with bytes and create the texture raw?
         // TODO: factor in menu bar -- currently full screen white, but should be white background for the picture viewport, black for the rest (when no menu bar)
         // TODO: don't necessarily want entire clear -> copy -> present logic here or if there are other steps for the current scene, currently an example
@@ -110,23 +110,26 @@ impl Graphics {
             )
             .unwrap();
 
+        let mut maps = None;
         canvas
             .with_texture_canvas(&mut texture, |texture_canvas| {
                 texture_canvas.set_draw_color(Color::WHITE);
                 texture_canvas.clear();
                 // TODO: avoid circular dependency
-                picture::draw_image(
+                maps = Some(picture::draw_image(
                     &mut GraphicsContext {
                         canvas: texture_canvas,
                     },
                     resource,
-                )
+                ));
             })
             .expect("Unable to render to a texture on the canvas");
 
         canvas
             .copy(&texture, None, Rect::new(0, 10, 320, 190))
             .expect("Unable to copy texture to the canvas");
+
+        maps.unwrap()
     }
 
     pub fn draw_view(&mut self, view: &View, group: usize, cel: usize, x: i16, y: i16, z: i16) {
@@ -143,6 +146,21 @@ impl Graphics {
 
     pub fn present(&mut self) {
         self.canvas.present();
+    }
+
+    pub fn draw_map(&mut self, map: &Box<[u8]>) {
+        self.clear();
+        for y in 0..Self::VIEWPORT_HEIGHT {
+            for x in 0..Self::VIEWPORT_WIDTH {
+                let idx = y * Self::VIEWPORT_WIDTH + x;
+                let c = Colour::from_ega(map[idx as usize]);
+                self.canvas.set_draw_color(Color::RGB(c.r, c.g, c.b));
+                self.canvas
+                    .draw_point(Point::new(x, y))
+                    .expect("Unable to draw point");
+            }
+        }
+        self.present();
     }
 }
 
@@ -168,37 +186,60 @@ impl<'a> GraphicsContext<'a> {
             .read_pixels(None, self.canvas.default_pixel_format())
             .unwrap();
 
-        let mut q = VecDeque::new();
-        q.push_front(Point::new(x, y));
-
         let pitch = self.canvas.default_pixel_format().byte_size_per_pixel();
-        let w = self.canvas.viewport().w as usize;
+        let w = self.canvas.viewport().w;
 
-        while !q.is_empty() {
-            let p = q.pop_front().unwrap();
+        flood_fill(
+            &mut v,
+            x,
+            y,
+            |_, p| {
+                self.canvas.draw_point(p).expect("Draw point failed");
+            },
+            |bytes, p| {
+                let offset = (p.y * w + p.x) as usize * pitch;
+                // TODO: currently filling over white
+                let result = bytes[offset..offset + 3] != [255, 255, 255];
+                // TODO: temporarily setting not-white so the algorithm doesn't revisit it, but won't impact the actual framebuffer
+                bytes[(p.y * w + p.x) as usize * pitch] = 0;
+                result
+            },
+        );
+    }
+}
 
-            let offset = (p.y as usize * w + p.x as usize) * pitch;
-            // TODO: currently filling over white
-            if v[offset..offset + 3] != [255, 255, 255] {
-                continue;
-            }
+pub(crate) fn flood_fill<FD, FF>(
+    bytes: &mut [u8],
+    x: i32,
+    y: i32,
+    mut draw_point: FD,
+    filled_point: FF,
+) where
+    FD: FnMut(&mut [u8], Point),
+    FF: Fn(&mut [u8], Point) -> bool,
+{
+    let mut q = VecDeque::new();
+    q.push_front(Point::new(x, y));
 
-            self.canvas.draw_point(p).unwrap();
-            // TODO: temporarily setting not-white so the algorithm doesn't revisit it, but won't impact the actual framebuffer
-            v[offset] = 0;
+    while !q.is_empty() {
+        let p = q.pop_front().unwrap();
 
-            if p.x < Graphics::VIEWPORT_WIDTH - 1 {
-                q.push_front(p.offset(1, 0));
-            }
-            if p.y < Graphics::VIEWPORT_HEIGHT - 1 {
-                q.push_front(p.offset(0, 1));
-            }
-            if p.x > 0 {
-                q.push_front(p.offset(-1, 0));
-            }
-            if p.y > 0 {
-                q.push_front(p.offset(0, -1));
-            }
+        if filled_point(bytes, p) {
+            continue;
+        }
+        draw_point(bytes, p);
+
+        if p.x < Graphics::VIEWPORT_WIDTH - 1 {
+            q.push_front(p.offset(1, 0));
+        }
+        if p.y < Graphics::VIEWPORT_HEIGHT - 1 {
+            q.push_front(p.offset(0, 1));
+        }
+        if p.x > 0 {
+            q.push_front(p.offset(-1, 0));
+        }
+        if p.y > 0 {
+            q.push_front(p.offset(0, -1));
         }
     }
 }
