@@ -132,11 +132,31 @@ impl Graphics {
         maps.unwrap()
     }
 
-    pub fn draw_view(&mut self, view: &View, group: usize, cel: usize, x: i16, y: i16, z: i16) {
+    pub fn draw_view(
+        &mut self,
+        view: &View,
+        group: usize,
+        cel: usize,
+        x: i16,
+        y: i16,
+        z: i16,
+        priority: i16,
+        priority_map: &[u8],
+    ) {
         // TODO: we don't want a method just to do this - how does view get included into a full scene render?
         let canvas = &mut self.canvas;
         // TODO: we should keep this on a texture and just put it into the rect
-        view::draw_image(view, group, cel, x, y, z, &mut GraphicsContext { canvas });
+        view::draw_image(
+            view,
+            group,
+            cel,
+            x,
+            y,
+            z,
+            priority,
+            priority_map,
+            &mut GraphicsContext { canvas },
+        );
     }
 
     pub fn clear(&mut self) {
@@ -150,13 +170,13 @@ impl Graphics {
 
     pub fn draw_map(&mut self, map: &Box<[u8]>) {
         self.clear();
-        for y in 0..Self::VIEWPORT_HEIGHT {
+        for y in 0..Self::VIEWPORT_HEIGHT - 10 {
             for x in 0..Self::VIEWPORT_WIDTH {
                 let idx = y * Self::VIEWPORT_WIDTH + x;
                 let c = Colour::from_ega(map[idx as usize]);
                 self.canvas.set_draw_color(Color::RGB(c.r, c.g, c.b));
                 self.canvas
-                    .draw_point(Point::new(x, y))
+                    .draw_point(Point::new(x, y + 10))
                     .expect("Unable to draw point");
             }
         }

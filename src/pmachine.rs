@@ -784,10 +784,11 @@ impl<'a> PMachine<'a> {
                 }
                 0x48 | 0x49 => {
                     // ret
-                    debug!("Return from function -> {}@{:x}", ctx.script, ctx.ip);
-
                     // unwind stack to previous state
-                    debug!("Unwinding stack to {}", ctx.stack_unwind);
+                    debug!(
+                        "Return from function: unwinding stack to {}",
+                        ctx.stack_unwind
+                    );
                     stack.truncate(ctx.stack_unwind);
                     return;
                 }
@@ -1430,7 +1431,7 @@ impl<'a> PMachine<'a> {
                     graphics.background_state.pic_number,
                 )
                 .unwrap();
-                graphics.draw_picture(resource);
+                let maps = graphics.draw_picture(resource);
 
                 // todo!("additional animate logic"); -- there's a lot else to do here to sort, filter, etc.
                 // for now, just rendering each cel as is. Currently ignoring palette, priority, signal, etc.
@@ -1446,29 +1447,55 @@ impl<'a> PMachine<'a> {
                     let loop_num = c.get_property(6).to_i16();
                     let cel = c.get_property(7).to_i16();
                     let signal = c.get_property(0x11).to_i16();
+                    let mut priority = c.get_property(0x3f).to_i16();
 
                     debug!(
-                        "Draw cel ({},{},{}) view: {:?} loop: {} cel: {} signal: {}",
-                        x, y, z, view_num, loop_num, cel, signal
+                        "Draw cel ({},{},{}) view: {:?} loop: {} cel: {} signal: {} priority: {}",
+                        x, y, z, view_num, loop_num, cel, signal, priority
                     );
 
-                    // TODO: why is magnifying glass -1 and doesn't move? (must need Bresen)
-                    // TODO: do we ignore or correct negative cel?
-                    // let cel = if cel < 0 { 0 } else { cel };
-                    if cel >= 0 {
-                        // Hide signal
-                        if signal & 0x8 == 0 {
-                            // TODO: improve caching of view
-                            let resource = resource::get_resource(
-                                self.resources,
-                                ResourceType::View,
-                                view_num,
-                            )
-                            .unwrap();
-                            let view = view::load_view(&resource);
-                            // TODO: when should z be set and used to adjust rect?
-                            graphics.draw_view(&view, loop_num as usize, cel as usize, x, y, 0);
-                        }
+                    // Fixed priority
+                    if signal & 0x10 == 0 {
+                        // TODO: extract common code
+                        priority = match y {
+                            0..=41 => 0,
+                            42..=52 => 1,
+                            53..=63 => 2,
+                            64..=73 => 3,
+                            74..=84 => 4,
+                            85..=94 => 5,
+                            95..=105 => 6,
+                            106..=115 => 7,
+                            116..=126 => 8,
+                            127..=137 => 9,
+                            138..=147 => 10,
+                            148..=158 => 11,
+                            159..=168 => 12,
+                            169..=179 => 13,
+                            180..=199 => 14,
+                            _ => 14,
+                        };
+                        c.set_property(0x3f, Register::Value(priority));
+                    }
+
+                    // Hide signal
+                    if signal & 0x8 == 0 {
+                        // TODO: improve caching of view
+                        let resource =
+                            resource::get_resource(self.resources, ResourceType::View, view_num)
+                                .unwrap();
+                        let view = view::load_view(&resource);
+                        // TODO: when should z be set and used to adjust rect?
+                        graphics.draw_view(
+                            &view,
+                            loop_num as usize,
+                            cel as usize,
+                            x,
+                            y,
+                            0,
+                            priority,
+                            &maps.priority,
+                        );
                     }
                 }
 
