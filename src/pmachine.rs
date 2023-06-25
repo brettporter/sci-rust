@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
@@ -1526,8 +1527,8 @@ impl<'a> PMachine<'a> {
                 // Display (text)
 
                 // params[1] may be a string (from format), or a resource (in which case, params[2] is a string number)
-                let (txt, next_param) = match params[1] {
-                    Register::String(_, _) => (self.get_string_value(params[1]), 2),
+                let (txt, mut next_param) = match params[1] {
+                    Register::String(_, _) => (self.get_string_value(params[1]), 2usize),
                     Register::Value(res_num) => {
                         let txt_res = resource::get_resource(
                             &self.resources,
@@ -1546,9 +1547,86 @@ impl<'a> PMachine<'a> {
                 };
 
                 info!("Kernel> Display {}", txt);
-                // TODO: handle commands in subsequent parameters, starting from next_param
+
+                #[derive(Default, FromPrimitive, Debug)]
+                enum TextAlign {
+                    #[default]
+                    Left = 0,
+                    Centre = 1,
+                    Right = -1,
+                }
+
+                #[derive(Default, Debug)]
+                struct DisplayCmd {
+                    x: i16,
+                    y: i16,
+                    align: TextAlign,
+                    text_colour: i16,
+                    background_color: Option<i16>,
+                    disabled_text: bool,
+                    font_resource: i16,
+                    width: i16,
+                }
+
+                let mut display_cmd = DisplayCmd::default();
+                while next_param < params[0].to_u16() as usize {
+                    let cmd = params[next_param].to_i16();
+                    next_param += 1;
+                    match cmd {
+                        100 => {
+                            // X,Y
+                            display_cmd.x = params[next_param].to_i16();
+                            display_cmd.y = params[next_param + 1].to_i16();
+                            next_param += 2;
+                        }
+                        101 => {
+                            // right -1 left 0 centre 1
+                            display_cmd.align =
+                                FromPrimitive::from_i16(params[next_param].to_i16()).unwrap();
+                            next_param += 1;
+                        }
+                        102 => {
+                            // text colour
+                            display_cmd.text_colour = params[next_param].to_i16();
+                            next_param += 1;
+                        }
+                        103 => {
+                            // background colour or -1
+                            display_cmd.background_color = match params[next_param].to_i16() {
+                                -1 => None,
+                                c => Some(c),
+                            };
+                            next_param += 1;
+                        }
+                        104 => {
+                            // disabled text flag
+                            display_cmd.disabled_text = !params[next_param].is_zero_or_null();
+                            next_param += 1;
+                        }
+                        105 => {
+                            // font (resource number)
+                            display_cmd.font_resource = params[next_param].to_i16();
+                            next_param += 1;
+                        }
+                        106 => {
+                            // width (to wrap to)
+                            display_cmd.width = params[next_param].to_i16();
+                            next_param += 1;
+                        }
+                        107 => {
+                            // TODO: save under
+                            // TODO: return FarPtr
+                        }
+                        108 => {
+                            // TODO: restore under, discard the command and parameters
+                            return None;
+                        }
+                        _ => {
+                            panic!("Unknown command {}", cmd)
+                        }
+                    }
+                }
                 // TODO: display text
-                // TODO: handle return to &FarPtr
                 None
             }
             0x1c => {
